@@ -1,13 +1,13 @@
 import Foundation
 
-/// Geteilte Konfiguration zwischen Container-App und Extension.
+/// Shared configuration between the container app and the extension.
 ///
-/// Bewusst NICHT ueber UserDefaults(suiteName:) — das ist auf macOS mit App Groups
-/// unzuverlaessig (cfprefsd verweigert "kCFPreferencesAnyUser with a container").
-/// Stattdessen eine JSON-Datei direkt im App-Group-Container, die beide Prozesse lesen.
+/// Deliberately NOT via UserDefaults(suiteName:) — that is unreliable for App Groups
+/// on macOS (cfprefsd refuses "kCFPreferencesAnyUser with a container"). Instead a
+/// JSON file directly in the App Group container that both processes can read.
 enum AppConfig {
     static let appGroup = "group.org.kartax.ImmichDesktop"
-    static let domainIdentifier = "immich-v2"   // frische ID, umgeht alten "abgemeldet"-Zustand
+    static let domainIdentifier = "immich-v2"   // fresh id, avoids the old "signed out" state
     static let domainDisplayName = "Immich"
 
     private struct Stored: Codable {
@@ -50,10 +50,10 @@ enum AppConfig {
         return !(s.serverURL ?? "").isEmpty && !(s.apiKey ?? "").isEmpty
     }
 
-    /// Beide Werte atomar in einem Schreibvorgang setzen.
+    /// Set both values atomically in a single write.
     static func set(serverURL: String, apiKey: String) {
         store(Stored(serverURL: serverURL, apiKey: apiKey))
     }
 
-    static func flush() { /* Dateischreibvorgang ist bereits synchron/atomar */ }
+    static func flush() { /* file write is already synchronous/atomic */ }
 }

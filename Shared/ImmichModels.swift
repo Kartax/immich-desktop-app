@@ -25,13 +25,13 @@ struct ImmichAsset: Codable, Identifiable {
     let exifInfo: ImmichExif?
 }
 
-/// Eintrag aus GET /api/timeline/buckets?size=MONTH
+/// Entry from GET /api/timeline/buckets?size=MONTH
 struct ImmichTimeBucket: Codable {
-    let timeBucket: String        // ISO, z. B. "2024-03-01T00:00:00.000Z"
+    let timeBucket: String        // ISO, e.g. "2024-03-01T00:00:00.000Z"
     let count: Int
 }
 
-/// Antwort von POST /api/search/metadata (nur die benoetigten Felder).
+/// Response of POST /api/search/metadata (only the fields we need).
 struct ImmichSearchResponse: Codable {
     struct Assets: Codable {
         let items: [ImmichAsset]

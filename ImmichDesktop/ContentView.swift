@@ -1,7 +1,7 @@
 import SwiftUI
-import FileProvider
 
 struct ContentView: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var serverURL = AppConfig.serverURL ?? ""
     @State private var apiKey = AppConfig.apiKey ?? ""
     @State private var status = ""
@@ -9,15 +9,15 @@ struct ContentView: View {
 
     var body: some View {
         Form {
-            Section("Immich-Server") {
-                TextField("Server-URL", text: $serverURL)
+            Section("Immich Server") {
+                TextField("Server URL", text: $serverURL)
                     .textContentType(.URL)
-                SecureField("API-Key", text: $apiKey)
+                SecureField("API Key", text: $apiKey)
             }
             Section {
                 HStack {
-                    Button("Verbindung testen") { Task { await test() } }
-                    Button("Speichern & aktivieren") { Task { await save() } }
+                    Button("Test Connection") { Task { await test() } }
+                    Button("Save & Activate") { Task { await save() } }
                         .keyboardShortcut(.defaultAction)
                     if busy { ProgressView().controlSize(.small) }
                 }
@@ -29,7 +29,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Section {
-                Text("Nach dem Aktivieren erscheint \"Immich\" in der Finder-Seitenleiste.")
+                Text("After activating, \"Immich\" appears in the Finder sidebar.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -42,43 +42,27 @@ struct ContentView: View {
     private func test() async {
         busy = true; defer { busy = false }
         guard let client = ImmichClient(serverURL: serverURL, apiKey: apiKey) else {
-            status = "Ungueltige URL."; return
+            status = "Invalid URL."; return
         }
         do {
             let albums = try await client.albums()
-            status = "OK – \(albums.count) Alben gefunden."
+            status = "OK – found \(albums.count) album(s)."
         } catch {
-            status = "Fehler: \(error.localizedDescription)"
+            status = "Error: \(error.localizedDescription)"
         }
     }
 
     @MainActor
     private func save() async {
         busy = true; defer { busy = false }
-        AppConfig.set(serverURL: serverURL, apiKey: apiKey)   // atomar in den Group-Container
+        AppConfig.set(serverURL: serverURL, apiKey: apiKey)   // atomically into the App Group container
         do {
-            try await registerDomain()
-            status = "Aktiviert. Immich ist jetzt im Finder und in Datei-Dialogen verfuegbar."
+            try await DomainManager.activate(reset: true)
+            status = "Activated. Immich is now available in Finder and file dialogs."
+            try? await Task.sleep(for: .seconds(0.8))   // show success briefly, then close
+            dismiss()
         } catch {
-            status = "Domain-Fehler: \(error.localizedDescription)"
-        }
-    }
-
-    private func registerDomain() async throws {
-        let domain = NSFileProviderDomain(
-            identifier: NSFileProviderDomainIdentifier(rawValue: AppConfig.domainIdentifier),
-            displayName: AppConfig.domainDisplayName
-        )
-        // ALLE bisherigen (eigenen) Domains entfernen – auch alte/abgemeldete –
-        // und dann frisch hinzufuegen. domains() liefert nur Domains dieser App.
-        let existing = try await NSFileProviderManager.domains()
-        for d in existing {
-            try? await NSFileProviderManager.remove(d)
-        }
-        try await NSFileProviderManager.add(domain)
-        if let manager = NSFileProviderManager(for: domain) {
-            try? await manager.signalEnumerator(for: .workingSet)
-            try? await manager.signalEnumerator(for: .rootContainer)
+            status = "Domain error: \(error.localizedDescription)"
         }
     }
 }

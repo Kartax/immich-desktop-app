@@ -1,13 +1,13 @@
 import Foundation
 
-/// Hilfsfunktionen fuer die Zeit-Ansicht (Alle Fotos -> Jahr -> Monat).
+/// Helpers for the time view (All Photos -> Year -> Month).
 enum TimelineFormat {
     private static let monthNames = [
-        "Januar", "Februar", "März", "April", "Mai", "Juni",
-        "Juli", "August", "September", "Oktober", "November", "Dezember",
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
     ]
 
-    /// "2024-03" -> "03 März" (fuehrende Zahl haelt die Finder-Sortierung chronologisch).
+    /// "2024-03" -> "03 March" (leading number keeps Finder sorting chronological).
     static func monthDisplay(_ month: String) -> String {
         let mm = String(month.suffix(2))
         if let i = Int(mm), (1...12).contains(i) {
@@ -16,7 +16,7 @@ enum TimelineFormat {
         return month
     }
 
-    /// Eindeutige Werte unter Beibehaltung der Eingabereihenfolge.
+    /// Unique values, preserving input order.
     static func orderedDistinct(_ values: [String]) -> [String] {
         var seen = Set<String>()
         var out: [String] = []

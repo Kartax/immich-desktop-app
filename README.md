@@ -1,76 +1,121 @@
 # Immich Desktop (macOS File Provider)
 
-Bindet einen selbst gehosteten **Immich**-Server als Laufwerk in macOS ein.
-Immich erscheint in der **Finder-Seitenleiste** und in jedem **Datei-Auswahldialog**
-(z. B. beim Datei-Upload im Browser). Alben werden als Ordner dargestellt; die
-Originaldateien werden **erst beim Oeffnen** vom Server geladen (on-demand).
+Exposes a self-hosted **Immich** server as a drive in macOS. Immich shows up in the
+**Finder sidebar** and in every **file open/upload dialog** (e.g. when a website asks
+you to attach a file). Albums and a date-based timeline appear as folders; the
+original files are downloaded **on demand**, only when you actually open or select
+them.
 
-Read-only: die App liest nur, sie veraendert nichts auf dem Server.
+Read-only: the app never modifies anything on the server.
 
-## Aufbau
+## What it does
 
-| Pfad | Zweck |
-|------|-------|
-| `ImmichDesktop/` | Container-App (SwiftUI): Server-URL + API-Key eingeben, Domain aktivieren |
-| `FileProviderExt/` | File Provider Extension (`NSFileProviderReplicatedExtension`) |
-| `Shared/` | Immich-API-Client, Modelle, geteilte Konfiguration (App Group) |
-| `project.yml` | XcodeGen-Projektdefinition |
+- Browse your Immich library straight from Finder and file pickers — no manual
+  download-then-upload dance.
+- On-demand: thumbnails and originals are fetched from the server only when needed.
+- Two ways to navigate:
+  - **All Photos** → Year → Month → assets (Immich timeline)
+  - one folder per **album**
 
-## Voraussetzungen
+## Finder structure
 
-1. **Vollstaendiges Xcode** (App Store) – die Command Line Tools allein genuegen
-   nicht, um die Extension zu bauen und zu signieren.
+```
+Immich/
+├─ All Photos/
+│  └─ 2024/
+│     └─ 03 März/
+│        └─ IMG_1234.jpg ...
+└─ <Album name>/
+   └─ IMG_5678.jpg ...
+```
+
+`All Photos` uses the Immich timeline (`/timeline/buckets`) for the year/month tree;
+a month's assets are loaded via `POST /search/metadata` (date range, paginated,
+`withExif: true` so file sizes are known).
+
+## Project layout
+
+| Path | Purpose |
+|------|---------|
+| `ImmichDesktop/` | Container app (SwiftUI): enter server URL + API key, activate the domain |
+| `FileProviderExt/` | File Provider extension (`NSFileProviderReplicatedExtension` + `NSFileProviderThumbnailing`) |
+| `Shared/` | Immich API client, models, shared config |
+| `project.yml` | XcodeGen project definition |
+
+Config is shared between the app and the extension via a JSON file in the App Group
+container (`group.org.kartax.ImmichDesktop`) — deliberately **not** `UserDefaults`,
+which is unreliable for App Groups on macOS.
+
+## Prerequisites
+
+1. **Full Xcode** (from the App Store). The Command Line Tools alone cannot build or
+   sign the extension.
 2. **XcodeGen**: `brew install xcodegen`
-3. Ein **Immich API-Key**: in Immich unter *Account Settings → API Keys* anlegen
-   (Rechte: mindestens `asset.read`, `asset.download`, `album.read`).
+3. An **Immich API key**: Immich → *Account Settings → API Keys*. Required
+   permissions: `album.read`, `asset.read`, `asset.download` (the thumbnail endpoint
+   also worked without `asset.view` on the test server; add it if grid previews fail).
 
-## Bauen & Starten
+## Build & run
 
 ```sh
 cd immich-desktop-app
-xcodegen generate          # erzeugt ImmichDesktop.xcodeproj aus project.yml
+xcodegen generate          # creates ImmichDesktop.xcodeproj from project.yml
 open ImmichDesktop.xcodeproj
 ```
 
 In Xcode:
 
-1. Beide Targets (`ImmichDesktop`, `FileProviderExt`) auswaehlen →
-   *Signing & Capabilities* → unter **Team** deine Apple-ID / dein Personal Team
-   waehlen. (Beide Targets brauchen dasselbe Team und dieselbe App Group
-   `group.org.kartax.ImmichDesktop`.)
-2. Schema `ImmichDesktop` waehlen, **Run** (⌘R).
-3. Im App-Fenster Server-URL (z. B. `http://192.168.1.10:2283`) und API-Key
-   eingeben → *Verbindung testen* → *Speichern & aktivieren*.
-4. Finder oeffnen → in der Seitenleiste unter *Speicherorte* erscheint **Immich**.
+1. Select both targets (`ImmichDesktop`, `FileProviderExt`) →
+   *Signing & Capabilities* → set **Team** to your Apple ID / Personal Team.
+   Both targets must use the **same team** and the same App Group
+   `group.org.kartax.ImmichDesktop`.
+2. Pick the `ImmichDesktop` scheme and **My Mac**, then **Run** (⌘R).
+3. In the app window enter the server URL (e.g. `https://immich.example.org`) and the
+   API key → **Verbindung testen** (test) → **Speichern & aktivieren** (save &
+   activate). The window closes automatically after activation.
+4. Open Finder → **Immich** appears under *Locations* in the sidebar.
 
-## Hinweise zur kostenlosen Apple-ID
+The app runs as a **menu bar item** (no Dock icon, `LSUIElement`). The menu bar icon
+shows it's running and offers *Open Settings…* (reopen the settings window) and
+*Quit Immich Desktop*. The Finder integration is tied to the app: **Quit removes the
+Immich domain** (it disappears from Finder), and **launching the app re-adds it**
+automatically if it was configured before. (Stopping the app from Xcode does not run
+the quit path, so the domain stays until the next launch re-syncs it.)
 
-- Mit einer **kostenlosen** Apple-ID signierte Apps laufen nur **7 Tage**; danach
-  muss die App in Xcode erneut gestartet werden (neu signieren). Fuer Dauerbetrieb
-  empfiehlt sich ein bezahlter Developer-Account (Signatur 1 Jahr gueltig).
-- App Groups funktionieren mit Personal Teams lokal; falls Xcode beim Aktivieren
-  der App-Group-Capability meckert, die Group in beiden Targets identisch setzen
-  und das Projekt neu bauen.
+Icons live in `ImmichDesktop/Assets.xcassets`: `AppIcon` (also what Finder shows for
+the provider) and `MenuBarIcon` (a template image that adapts to light/dark menu bars).
 
-## Struktur im Finder
+To compile-check from the command line without signing:
 
-```
-Immich/
-├─ Alle Fotos/
-│  └─ 2024/
-│     └─ 03 März/
-│        └─ IMG_1234.jpg ...
-└─ <Albumname>/
-   └─ IMG_5678.jpg ...
+```sh
+xcodebuild -project ImmichDesktop.xcodeproj -scheme ImmichDesktop \
+  -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
 ```
 
-"Alle Fotos" nutzt die Immich-Timeline (`/timeline/buckets`) fuer die Jahr/Monat-
-Struktur; die Assets eines Monats werden per `POST /search/metadata` (Datums-Range,
-paginiert) geladen.
+## Notes for a free Apple ID
 
-## Bekannte Grenzen (v1)
+- Apps signed with a **free** Apple ID only run for **7 days**; after that, open the
+  project in Xcode and press ⌘R once to re-sign. The File Provider keeps working
+  while Xcode is closed — the system launches the extension on demand — but the
+  signature expiry still applies. A paid Apple Developer account signs for 1 year.
+- The app reaches the server over plain HTTP / a private CA, so both `Info.plist`
+  files carry an **App Transport Security** exception
+  (`NSAllowsArbitraryLoads` + `NSAllowsLocalNetworking`).
 
-- Keine Vorschau-Thumbnails fuer noch nicht geladene Dateien (generisches Icon);
-  nach dem ersten Oeffnen erzeugt der Finder die Vorschau aus dem Inhalt.
-- Keine Aenderungsverfolgung (Sync-Anchor): neue/geloeschte Assets erscheinen erst
-  nach erneuter Enumeration des Ordners.
+## Troubleshooting
+
+- **Finder shows "signed out" / the folder stays empty:** click *Speichern &
+  aktivieren* again. Activation removes any stale domain and registers a fresh one
+  (identifier `immich-v2`). Live logs:
+  `log stream --predicate 'subsystem == "org.kartax.ImmichDesktop"'`.
+- **Files show as 0 KB and won't open:** the asset size was missing — make sure the
+  search request sends `withExif: true` (already handled in `ImmichClient`).
+- **No grid thumbnails:** the principal class must declare
+  `NSFileProviderThumbnailing` conformance (already handled) and the API key must be
+  able to read thumbnails.
+
+## Known limitations
+
+- No change tracking (sync anchors): newly added or deleted assets appear only after
+  the folder is re-enumerated.
+- Read-only — uploads back to Immich are not supported.

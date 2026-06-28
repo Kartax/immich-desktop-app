@@ -1,20 +1,20 @@
 import FileProvider
 
-/// Kodiert/dekodiert die Identitaet eines Items als NSFileProviderItemIdentifier.
+/// Encodes/decodes an item's identity as an NSFileProviderItemIdentifier.
 ///
-/// Schema (Trenner "|"):
+/// Scheme (separator "|"):
 ///   root                 -> NSFileProviderItemIdentifier.rootContainer
-///   "Alle Fotos"         -> "timeline"
-///   Jahr                 -> "year|2024"
-///   Monat                -> "month|2024-03"
+///   "All Photos"         -> "timeline"
+///   Year                 -> "year|2024"
+///   Month                -> "month|2024-03"
 ///   Album                -> "album|<albumId>"
-///   Asset                -> "asset|<parentRaw>|<assetId>"  (Eltern-Identifier eingebettet,
-///                            damit dasselbe Asset unter Album wie Monat existieren kann)
+///   Asset                -> "asset|<parentRaw>|<assetId>"  (parent identifier embedded
+///                            so the same asset can exist under both an album and a month)
 struct ItemID {
     enum Kind { case root, timeline, year, month, album, asset }
 
     let kind: Kind
-    let value: String                              // Jahr, "YYYY-MM", albumId bzw. assetId
+    let value: String                              // year, "YYYY-MM", albumId or assetId
     let parent: NSFileProviderItemIdentifier?
 
     init(_ identifier: NSFileProviderItemIdentifier) {
@@ -25,7 +25,7 @@ struct ItemID {
             return
         }
 
-        // Asset zuerst: parentRaw kann selbst "|" enthalten, assetId (UUID) nicht.
+        // Asset first: parentRaw may itself contain "|", an assetId (UUID) does not.
         if raw.hasPrefix("asset|") {
             let rest = String(raw.dropFirst("asset|".count))   // "<parentRaw>|<assetId>"
             if let sep = rest.range(of: "|", options: .backwards) {

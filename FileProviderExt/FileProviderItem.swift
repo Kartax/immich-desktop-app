@@ -23,7 +23,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         self.size = size
     }
 
-    // MARK: Ordner
+    // MARK: Folders
 
     static let root = FileProviderItem(
         identifier: .rootContainer, parent: .rootContainer,
@@ -31,7 +31,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 
     static func timelineFolder() -> FileProviderItem {
         FileProviderItem(identifier: ItemID.timeline, parent: .rootContainer,
-                         filename: "Alle Fotos", contentType: .folder, isFolder: true, size: nil)
+                         filename: "All Photos", contentType: .folder, isFolder: true, size: nil)
     }
 
     static func yearFolder(_ year: String) -> FileProviderItem {
@@ -51,7 +51,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
                   contentType: .folder, isFolder: true, size: nil)
     }
 
-    // MARK: Datei (Asset)
+    // MARK: File (asset)
 
     convenience init(asset: ImmichAsset, parent: NSFileProviderItemIdentifier) {
         let ext = (asset.originalFileName as NSString).pathExtension
@@ -68,8 +68,8 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     }
 
     var itemVersion: NSFileProviderItemVersion {
-        // An Groesse + Name koppeln, damit Aenderungen (z. B. 0 -> echte Groesse)
-        // sicher als Update erkannt werden statt aus dem Cache zu bleiben.
+        // Tie to size + name so changes (e.g. 0 -> real size) are reliably detected
+        // as an update instead of being served from the cache.
         let token = Data("\(size ?? 0)|\(filename)".utf8)
         return NSFileProviderItemVersion(contentVersion: token, metadataVersion: token)
     }

@@ -13,7 +13,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver,
                         startingAt page: NSFileProviderPage) {
-        // Working Set / Trash bleiben leer.
+        // Working set / trash stay empty.
         if container == .workingSet || container == .trashContainer {
             observer.finishEnumerating(upTo: nil)
             return
@@ -58,12 +58,12 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     })
 
                 case .asset:
-                    break   // Assets haben keine Kinder
+                    break   // assets have no children
                 }
                 fpLog.info("enumerate \(self.container.rawValue, privacy: .public): OK")
                 observer.finishEnumerating(upTo: nil)
             } catch {
-                fpLog.error("enumerate \(self.container.rawValue, privacy: .public) FEHLER: \(error.localizedDescription, privacy: .public)")
+                fpLog.error("enumerate \(self.container.rawValue, privacy: .public) ERROR: \(error.localizedDescription, privacy: .public)")
                 observer.finishEnumeratingWithError(error)
             }
         }

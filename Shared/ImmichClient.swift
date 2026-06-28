@@ -3,9 +3,9 @@ import os
 
 let fpLog = Logger(subsystem: "org.kartax.ImmichDesktop", category: "fileprovider")
 
-/// Schlanker Client fuer die Immich REST-API (read-only).
+/// Lightweight client for the Immich REST API (read-only).
 struct ImmichClient {
-    let baseURL: URL      // endet auf .../api
+    let baseURL: URL      // ends with .../api
     let apiKey: String
 
     init?(serverURL: String, apiKey: String) {
@@ -17,13 +17,13 @@ struct ImmichClient {
         self.apiKey = apiKey
     }
 
-    /// Initialisiert aus der geteilten App-Group-Konfiguration.
+    /// Initializes from the shared App Group configuration.
     init?() {
         let s = AppConfig.serverURL
         let k = AppConfig.apiKey
         fpLog.info("ImmichClient(): serverURL=\(s ?? "nil", privacy: .public), hasKey=\(k?.isEmpty == false, privacy: .public)")
         guard let s, !s.isEmpty, let k, !k.isEmpty else {
-            fpLog.error("ImmichClient(): Konfiguration fehlt – notAuthenticated")
+            fpLog.error("ImmichClient(): configuration missing – notAuthenticated")
             return nil
         }
         self.init(serverURL: s, apiKey: k)
@@ -52,7 +52,7 @@ struct ImmichClient {
         return try JSONDecoder().decode(ImmichAsset.self, from: data)
     }
 
-    /// Laedt das Original in eine temporaere Datei und liefert deren URL.
+    /// Downloads the original into a temporary file and returns its URL.
     func downloadOriginal(id: String) async throws -> URL {
         let (tmp, _) = try await URLSession.shared.download(for: request("assets/\(id)/original"))
         let dest = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -68,7 +68,7 @@ struct ImmichClient {
         return data
     }
 
-    // MARK: - Timeline (Alle Fotos nach Jahr/Monat)
+    // MARK: - Timeline (All Photos by year/month)
 
     func monthBuckets() async throws -> [ImmichTimeBucket] {
         let (data, _) = try await URLSession.shared.data(
@@ -76,7 +76,7 @@ struct ImmichClient {
         return try JSONDecoder().decode([ImmichTimeBucket].self, from: data)
     }
 
-    /// Alle Assets eines Monats ("YYYY-MM") via paginierter Metadaten-Suche.
+    /// All assets of a month ("YYYY-MM") via paginated metadata search.
     func assets(inMonth month: String) async throws -> [ImmichAsset] {
         let (after, before) = ImmichClient.monthRange(month)
         var out: [ImmichAsset] = []
@@ -90,7 +90,7 @@ struct ImmichClient {
                 "takenBefore": before,
                 "size": 1000,
                 "page": page,
-                "withExif": true,   // liefert exifInfo.fileSizeInByte – sonst Größe 0, kein Download
+                "withExif": true,   // provides exifInfo.fileSizeInByte – otherwise size 0, no download
             ]
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, _) = try await URLSession.shared.data(for: req)
@@ -102,7 +102,7 @@ struct ImmichClient {
         return out
     }
 
-    /// Halboffenes Intervall [Monatsanfang, Folgemonatsanfang) als ISO-Strings.
+    /// Half-open interval [month start, next month start) as ISO strings.
     static func monthRange(_ month: String) -> (after: String, before: String) {
         let parts = month.split(separator: "-")
         let y = Int(parts.first ?? "") ?? 1970

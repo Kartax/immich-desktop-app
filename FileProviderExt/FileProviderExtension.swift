@@ -4,12 +4,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 
     required init(domain: NSFileProviderDomain) {
         super.init()
-        fpLog.info("FileProviderExtension init für Domain \(domain.identifier.rawValue, privacy: .public)")
+        fpLog.info("FileProviderExtension init for domain \(domain.identifier.rawValue, privacy: .public)")
     }
 
     func invalidate() {}
 
-    // MARK: - Metadaten
+    // MARK: - Metadata
 
     func item(for identifier: NSFileProviderItemIdentifier,
               request: NSFileProviderRequest,
@@ -17,7 +17,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let progress = Progress(totalUnitCount: 1)
         let id = ItemID(identifier)
 
-        // Ordner ohne Netzwerkzugriff direkt beantworten.
+        // Answer folders directly without network access.
         let staticFolder: FileProviderItem?
         switch id.kind {
         case .root:     staticFolder = FileProviderItem.root
@@ -62,7 +62,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return progress
     }
 
-    // MARK: - Inhalt (on-demand Download)
+    // MARK: - Contents (on-demand download)
 
     func fetchContents(for itemIdentifier: NSFileProviderItemIdentifier,
                        version requestedVersion: NSFileProviderItemVersion?,
@@ -90,13 +90,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return progress
     }
 
-    // MARK: - Thumbnails (Finder-Vorschau)
+    // MARK: - Thumbnails (Finder preview)
 
     func fetchThumbnails(for itemIdentifiers: [NSFileProviderItemIdentifier],
                          requestedSize size: CGSize,
                          perThumbnailCompletionHandler: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
                          completionHandler: @escaping (Error?) -> Void) -> Progress {
-        fpLog.info("fetchThumbnails: \(itemIdentifiers.count, privacy: .public) Stück")
+        fpLog.info("fetchThumbnails: \(itemIdentifiers.count, privacy: .public) item(s)")
         let progress = Progress(totalUnitCount: Int64(itemIdentifiers.count))
         guard let client = ImmichClient() else {
             completionHandler(NSFileProviderError(.notAuthenticated))
@@ -138,7 +138,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         return ItemEnumerator(container: containerItemIdentifier, client: client)
     }
 
-    // MARK: - Schreiboperationen (nicht unterstuetzt, read-only)
+    // MARK: - Write operations (unsupported, read-only)
 
     func createItem(basedOn itemTemplate: NSFileProviderItem,
                     fields: NSFileProviderItemFields,
