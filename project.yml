@@ -1,0 +1,46 @@
+name: ImmichDesktop
+options:
+  bundleIdPrefix: org.kartax
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    # WICHTIG: In Xcode unter "Signing & Capabilities" dein (auch kostenloses)
+    # Personal Team auswaehlen. Alternativ hier die Team-ID eintragen:
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  ImmichDesktop:
+    type: application
+    platform: macOS
+    sources:
+      - ImmichDesktop
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.kartax.ImmichDesktop
+        INFOPLIST_FILE: ImmichDesktop/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ImmichDesktop/ImmichDesktop.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - target: FileProviderExt
+        embed: true
+
+  FileProviderExt:
+    type: app-extension
+    platform: macOS
+    sources:
+      - FileProviderExt
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.kartax.ImmichDesktop.FileProvider
+        INFOPLIST_FILE: FileProviderExt/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FileProviderExt/FileProviderExt.entitlements
+        GENERATE_INFOPLIST_FILE: NO
