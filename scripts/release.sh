@@ -80,6 +80,14 @@ EXPORT_DIR="$BUILD_DIR/export"
 APP="$EXPORT_DIR/$APP_NAME.app"
 DMG="$BUILD_DIR/$APP_NAME.dmg"
 DMG_STAGE="$BUILD_DIR/dmg-stage"
+DMG_ASSETS="$BUILD_DIR/dmg"   # generated background + volume icon
+
+# create-dmg styles the install window (window size, background, icon layout,
+# Applications drop link). Required tool, like xcodegen/gh.
+command -v create-dmg >/dev/null 2>&1 || {
+  echo "!! create-dmg not found — install with 'brew install create-dmg'." >&2
+  exit 1
+}
 
 # --- 0. regenerate project (source list lives in pbxproj) ------------------
 if command -v xcodegen >/dev/null 2>&1; then
@@ -87,7 +95,7 @@ if command -v xcodegen >/dev/null 2>&1; then
   xcodegen generate
 fi
 
-rm -rf "$ARCHIVE" "$EXPORT_DIR" "$DMG" "$DMG_STAGE"
+rm -rf "$ARCHIVE" "$EXPORT_DIR" "$DMG" "$DMG_STAGE" "$DMG_ASSETS"
 
 # --- 1. archive (Release, Developer ID, Hardened Runtime) ------------------
 echo "==> Archiving"
@@ -104,13 +112,50 @@ xcodebuild -exportArchive -archivePath "$ARCHIVE" \
   -exportOptionsPlist ExportOptions.plist -exportPath "$EXPORT_DIR" \
   -allowProvisioningUpdates
 
-# --- 3. build the .dmg -----------------------------------------------------
+# --- 3. build the styled .dmg ----------------------------------------------
 echo "==> Building DMG"
-mkdir -p "$DMG_STAGE"
+mkdir -p "$DMG_STAGE" "$DMG_ASSETS"
+# Stage ONLY the .app — create-dmg adds the Applications drop link itself
+# (a manual `ln -s /Applications` would collide with --app-drop-link).
 cp -R "$APP" "$DMG_STAGE/"
-ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGE" \
-  -ov -format UDZO "$DMG"
+
+# 3a. Background: render @1x + @2x, then merge into a HiDPI .tiff so the window
+#     stays crisp on Retina. tiffutil ships with macOS.
+swift scripts/dmg/make-background.swift "$DMG_ASSETS"
+tiffutil -cathidpicheck \
+  "$DMG_ASSETS/background.png" "$DMG_ASSETS/background@2x.png" \
+  -out "$DMG_ASSETS/background.tiff"
+
+# 3b. Volume icon (replaces the generic disk icon in the window title bar) —
+#     built from the app icon PNGs that already live in the asset catalog.
+ICONSET="$DMG_ASSETS/VolumeIcon.iconset"
+ICON_SRC="ImmichDesktop/Assets.xcassets/AppIcon.appiconset"
+mkdir -p "$ICONSET"
+cp "$ICON_SRC/icon_16.png"   "$ICONSET/icon_16x16.png"
+cp "$ICON_SRC/icon_32.png"   "$ICONSET/icon_16x16@2x.png"
+cp "$ICON_SRC/icon_32.png"   "$ICONSET/icon_32x32.png"
+cp "$ICON_SRC/icon_64.png"   "$ICONSET/icon_32x32@2x.png"
+cp "$ICON_SRC/icon_128.png"  "$ICONSET/icon_128x128.png"
+cp "$ICON_SRC/icon_256.png"  "$ICONSET/icon_128x128@2x.png"
+cp "$ICON_SRC/icon_256.png"  "$ICONSET/icon_256x256.png"
+cp "$ICON_SRC/icon_512.png"  "$ICONSET/icon_256x256@2x.png"
+cp "$ICON_SRC/icon_512.png"  "$ICONSET/icon_512x512.png"
+cp "$ICON_SRC/icon_1024.png" "$ICONSET/icon_512x512@2x.png"
+iconutil -c icns "$ICONSET" -o "$DMG_ASSETS/VolumeIcon.icns"
+
+# 3c. Assemble the window. Icon x-positions (165 / 495) straddle the arrow band
+#     drawn into the background by make-background.swift — keep them in sync.
+create-dmg \
+  --volname "$APP_NAME" \
+  --background "$DMG_ASSETS/background.tiff" \
+  --volicon "$DMG_ASSETS/VolumeIcon.icns" \
+  --window-pos 200 120 \
+  --window-size 660 400 \
+  --icon-size 128 \
+  --icon "$APP_NAME.app" 165 205 \
+  --hide-extension "$APP_NAME.app" \
+  --app-drop-link 495 205 \
+  "$DMG" "$DMG_STAGE"
 
 # --- 4. notarize + staple --------------------------------------------------
 echo "==> Submitting for notarization (this can take a few minutes)"
