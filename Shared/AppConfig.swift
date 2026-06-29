@@ -7,8 +7,11 @@ import Foundation
 /// JSON file directly in the App Group container that both processes can read.
 enum AppConfig {
     static let appGroup = "group.org.kartax.ImmichDesktop"
-    static let domainIdentifier = "immich-v2"   // fresh id, avoids the old "signed out" state
-    static let domainDisplayName = "Immich"
+    // Stable, permanent domain identifier — do NOT version-bump it as a recovery trick.
+    // A stuck "signed out" state is cleared by a thorough teardown in DomainManager
+    // (remove with .removeAll), not by renaming the identifier.
+    static let domainIdentifier = "ImmichDesktop"
+    static let domainDisplayName = "ImmichDesktop"   // the label shown in Finder's sidebar
 
     private struct Stored: Codable {
         var serverURL: String?

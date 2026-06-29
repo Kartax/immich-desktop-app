@@ -99,9 +99,14 @@ network and asset/album metadata with a fetch. Originals are fetched lazily in
   or the system never calls `fetchThumbnails`.
 - **ATS exception** (`NSAllowsArbitraryLoads` + `NSAllowsLocalNetworking`) in both
   `Info.plist`s, because the server is reached over http / a private CA.
-- The active domain identifier is **`immich-v2`**; `DomainManager.activate(reset: true)`
-  removes all existing domains and re-adds, which is also the recovery for a stuck
-  "signed out / abgemeldet" state in Finder.
+- The active domain identifier is **`ImmichDesktop`** (stable — do not version-bump it
+  as a recovery trick). `DomainManager.activate(reset: true)` tears every domain down
+  with **`.removeAll`** and re-adds, which is the recovery for a stuck "signed out /
+  abgemeldet" state. `activate(reset: false)` (launch) keeps our domain + cache but
+  prunes any stale/foreign domains (e.g. a leftover `immich-v2` from older builds), so
+  identifier changes migrate cleanly. If a stuck state survives even `.removeAll`, the
+  root cause is `fileproviderd`, not the app — clear it with `killall fileproviderd`
+  (dev only), not by renaming the identifier.
 
 ## Conventions
 

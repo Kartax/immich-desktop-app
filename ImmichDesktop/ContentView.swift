@@ -9,10 +9,14 @@ struct ContentView: View {
 
     var body: some View {
         Form {
-            Section("Immich Server") {
-                TextField("Server URL", text: $serverURL)
+            Section {
+                TextField("Server URL", text: $serverURL,
+                          prompt: Text(verbatim: "http://192.168.1.10:2283"))
                     .textContentType(.URL)
-                SecureField("API Key", text: $apiKey)
+                SecureField("API Key", text: $apiKey,
+                            prompt: Text("Paste your Immich API key"))
+            } header: {
+                Text("Immich Server")
             }
             Section {
                 HStack {
@@ -27,11 +31,6 @@ struct ContentView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Section {
-                Text("After activating, \"Immich\" appears in the Finder sidebar.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

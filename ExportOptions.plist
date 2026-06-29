@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Export options for a Developer ID (direct download, non-App-Store) build.
+  Consumed by `xcodebuild -exportArchive` in scripts/release.sh.
+  Requires a paid Apple Developer Program membership and a "Developer ID
+  Application" certificate in the login keychain.
+-->
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>developer-id</string>
+    <key>teamID</key>
+    <string>8HAG9JU2ZK</string>
+    <key>signingStyle</key>
+    <string>automatic</string>
+</dict>
+</plist>

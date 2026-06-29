@@ -8,7 +8,7 @@ struct ImmichDesktopApp: App {
     var body: some Scene {
         Window("Immich Desktop", id: SettingsWindow.id) {
             ContentView()
-                .frame(minWidth: 480, minHeight: 360)
+                .frame(width: 480, height: 280)
         }
         .windowResizability(.contentSize)
 

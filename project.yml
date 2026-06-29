@@ -12,8 +12,19 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     # Personal Team ID, so signing survives `xcodegen generate`. Change this if you
-    # build under a different Apple ID / team.
+    # build under a different Apple ID / team. NOTE: notarized direct-download
+    # releases require a *paid* Apple Developer Program membership (this Team ID
+    # stays valid for an individual account once you enroll).
     DEVELOPMENT_TEAM: "8HAG9JU2ZK"
+  configs:
+    # Release is what `scripts/release.sh` archives & notarizes. Hardened Runtime is
+    # mandatory for notarization. Do NOT pin CODE_SIGN_IDENTITY here: with Automatic
+    # signing the archive is signed with Apple Development, and the export step
+    # (ExportOptions.plist, method=developer-id) re-signs it to "Developer ID
+    # Application". Pinning the identity conflicts with automatic signing and breaks
+    # archiving. Debug builds keep working with automatic signing for local ⌘R.
+    Release:
+      ENABLE_HARDENED_RUNTIME: YES
 
 targets:
   ImmichDesktop:
