@@ -38,9 +38,11 @@ struct ImmichClient {
     }
 
     /// Lightweight reachability + auth probe used by the connection monitor.
-    /// Hits `/users/me` (cheap, requires a valid key) and throws unless it returns 200.
+    /// Hits `/albums` and throws unless it returns 200. Must use an endpoint covered by
+    /// the required API-key scopes (`album.read`) — e.g. `/users/me` would 403 with our
+    /// key and make the status icon look perpetually disconnected.
     func checkConnection() async throws {
-        let (_, response) = try await URLSession.shared.data(for: request("users/me"))
+        let (_, response) = try await URLSession.shared.data(for: request("albums"))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.userAuthenticationRequired)
         }
