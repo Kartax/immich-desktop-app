@@ -23,6 +23,22 @@ final class UpdateChecker {
 
     private(set) var state: State = .idle
 
+    /// How often to re-check while the app runs. Once a day is plenty for a long-lived
+    /// menu bar app (the check is also run immediately on `start()`).
+    private let interval: Duration = .seconds(24 * 60 * 60)
+    private var pollTask: Task<Void, Never>?
+
+    /// Checks now and then re-checks daily. Call once on launch.
+    func start() {
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.check()
+                try? await Task.sleep(for: self?.interval ?? .seconds(24 * 60 * 60))
+            }
+        }
+    }
+
     /// Public GitHub Pages download site.
     static let downloadPageURL = URL(string: "https://kartax.github.io/immich-desktop-app-public/")!
 

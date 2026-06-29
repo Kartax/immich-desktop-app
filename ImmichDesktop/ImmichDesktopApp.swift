@@ -46,8 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ConnectionMonitor.shared.start()
         trackConnection()
 
-        // Check for a newer release in the background (report-only, no auto-update).
-        Task { await UpdateChecker.shared.check() }
+        // Check for a newer release now and once a day (report-only, no auto-update).
+        UpdateChecker.shared.start()
     }
 
     /// Keep the app alive when the settings window is closed (it's a menu bar app).
@@ -99,34 +99,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .target = self
     }
 
-    /// State-dependent update row(s), mirroring the previous SwiftUI menu.
+    /// State-dependent update row. Report-only and runs in the background, so transient
+    /// states (idle/checking/failed) show nothing — nobody happens to have the menu open
+    /// for those. Only the settled, meaningful outcomes get a row.
     private func addUpdateItems(to menu: NSMenu) {
-        func disabled(_ title: String) {
-            menu.addItem(withTitle: title, action: nil, keyEquivalent: "").isEnabled = false
-        }
-        func action(_ title: String, _ selector: Selector) {
-            menu.addItem(withTitle: title, action: selector, keyEquivalent: "").target = self
-        }
         switch UpdateChecker.shared.state {
-        case .idle:
-            action("Check for Updates…", #selector(checkForUpdates))
-        case .checking:
-            disabled("Checking for updates…")
         case .upToDate:
-            disabled("You're up to date")
-            action("Check for Updates…", #selector(checkForUpdates))
+            menu.addItem(withTitle: "You're up to date", action: nil, keyEquivalent: "")
+                .isEnabled = false
         case .updateAvailable(let latest):
-            action("New version available (v\(latest))", #selector(openDownloadPage))
-        case .failed:
-            action("Update check failed — Retry", #selector(checkForUpdates))
+            menu.addItem(withTitle: "New version available (v\(latest))",
+                         action: #selector(openDownloadPage), keyEquivalent: "").target = self
+        case .idle, .checking, .failed:
+            break
         }
     }
 
     // MARK: - Menu actions
 
     @objc private func openSettings() { showSettings() }
-
-    @objc private func checkForUpdates() { Task { await UpdateChecker.shared.check() } }
 
     @objc private func openDownloadPage() { NSWorkspace.shared.open(UpdateChecker.downloadPageURL) }
 
@@ -163,6 +154,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
-        return "v\(short) (build #\(build))"
+        return "v\(short) (\(build))"
     }
 }
