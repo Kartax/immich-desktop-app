@@ -57,6 +57,7 @@ struct ContentView: View {
         AppConfig.set(serverURL: serverURL, apiKey: apiKey)   // atomically into the App Group container
         do {
             try await DomainManager.activate(reset: true)
+            await ConnectionMonitor.shared.check()   // refresh the menu bar icon right away
             status = "Activated. Immich is now available in Finder and file dialogs."
             try? await Task.sleep(for: .seconds(0.8))   // show success briefly, then close
             dismiss()

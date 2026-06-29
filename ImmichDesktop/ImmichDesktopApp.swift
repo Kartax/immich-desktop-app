@@ -4,6 +4,7 @@ import AppKit
 @main
 struct ImmichDesktopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @State private var connection = ConnectionMonitor.shared
 
     var body: some Scene {
         Window("Immich Desktop", id: SettingsWindow.id) {
@@ -12,10 +13,15 @@ struct ImmichDesktopApp: App {
         }
         .windowResizability(.contentSize)
 
-        // Same symbol as the Finder sidebar icon (FileProviderExt Info.plist
-        // CFBundleSymbolName), so the menu bar and Finder match.
-        MenuBarExtra("Immich Desktop", systemImage: "camera.aperture") {
+        MenuBarExtra {
             MenuBarContent()
+        } label: {
+            // Same symbol as the Finder sidebar icon (FileProviderExt Info.plist
+            // CFBundleSymbolName), so the menu bar and Finder match. When the server
+            // isn't reachable the icon dims to ~50% — the macOS-standard "inactive"
+            // status-item look (cf. NSStatusBarButton.appearsDisabled).
+            Image(systemName: "camera.aperture")
+                .opacity(connection.status.isConnected ? 1.0 : 0.5)
         }
     }
 }
@@ -90,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if AppConfig.isConfigured {
             Task { try? await DomainManager.activate(reset: false) }
         }
+
+        // Begin polling server reachability so the menu bar icon reflects it.
+        ConnectionMonitor.shared.start()
 
         // Check for a newer release in the background (report-only, no auto-update).
         Task { await UpdateChecker.shared.check() }

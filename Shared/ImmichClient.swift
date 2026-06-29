@@ -37,6 +37,15 @@ struct ImmichClient {
         return req
     }
 
+    /// Lightweight reachability + auth probe used by the connection monitor.
+    /// Hits `/users/me` (cheap, requires a valid key) and throws unless it returns 200.
+    func checkConnection() async throws {
+        let (_, response) = try await URLSession.shared.data(for: request("users/me"))
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.userAuthenticationRequired)
+        }
+    }
+
     func albums() async throws -> [ImmichAlbum] {
         let (data, _) = try await URLSession.shared.data(for: request("albums"))
         return try JSONDecoder().decode([ImmichAlbum].self, from: data)
