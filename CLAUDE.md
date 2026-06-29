@@ -111,5 +111,7 @@ network and asset/album metadata with a fetch. Originals are fetched lazily in
 ## Conventions
 
 - Bundle id prefix is `org.kartax`; App Group is `group.org.kartax.ImmichDesktop`.
-- API key needs `album.read`, `asset.read`, `asset.download` (optionally `asset.view`).
+- API key needs all four of `album.read`, `asset.read`, `asset.download`, `asset.view`.
+  `asset.view` is required, not optional: it gates `GET /assets/{id}/thumbnail`, so
+  without it the Finder grid previews fail (only metadata/browsing/download would work).
 - Do not create git commits in this repo on the user's behalf.

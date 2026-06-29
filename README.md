@@ -8,6 +8,11 @@ them.
 
 Read-only: the app never modifies anything on the server.
 
+**Download & info:** https://kartax.github.io/immich-desktop-app-public/ — a notarized
+`.dmg` for macOS 14+. This repo holds the source; the download page and release
+binaries live in the public [`immich-desktop-app-public`](https://github.com/Kartax/immich-desktop-app-public)
+repo.
+
 ## What it does
 
 - Browse your Immich library straight from Finder and file pickers — no manual
@@ -52,8 +57,8 @@ which is unreliable for App Groups on macOS.
    sign the extension.
 2. **XcodeGen**: `brew install xcodegen`
 3. An **Immich API key**: Immich → *Account Settings → API Keys*. Required
-   permissions: `album.read`, `asset.read`, `asset.download` (the thumbnail endpoint
-   also worked without `asset.view` on the test server; add it if grid previews fail).
+   permissions: `album.read`, `asset.read`, `asset.download`, `asset.view` — all four.
+   `asset.view` gates the thumbnail endpoint, so the Finder grid previews need it.
 
 ## Build & run
 
