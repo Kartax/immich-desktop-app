@@ -27,8 +27,12 @@ enum SettingsWindow {
 /// Contents of the menu bar menu.
 private struct MenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
+    @State private var updates = UpdateChecker.shared
 
     var body: some View {
+        Text("Immich Desktop \(Self.versionString)")
+        updateItem
+        Divider()
         Button("Open Settings…") {
             NSApp.activate(ignoringOtherApps: true)
             openWindow(id: SettingsWindow.id)
@@ -41,6 +45,37 @@ private struct MenuBarContent: View {
                 NSApplication.shared.terminate(nil)
             }
         }
+    }
+
+    /// Update-check row: state-dependent. When a newer version exists it becomes a
+    /// button that opens the download page; otherwise it offers a manual re-check.
+    @ViewBuilder
+    private var updateItem: some View {
+        switch updates.state {
+        case .idle:
+            Button("Check for Updates…") { Task { await updates.check() } }
+        case .checking:
+            Text("Checking for updates…")
+        case .upToDate:
+            Text("You're up to date")
+            Button("Check for Updates…") { Task { await updates.check() } }
+        case .updateAvailable(let latest):
+            Button("New version available (v\(latest))") {
+                NSWorkspace.shared.open(UpdateChecker.downloadPageURL)
+            }
+        case .failed:
+            Button("Update check failed — Retry") { Task { await updates.check() } }
+        }
+    }
+
+    /// Marketing version + build number from the app bundle's Info.plist
+    /// (CFBundleShortVersionString / CFBundleVersion, set via MARKETING_VERSION /
+    /// CURRENT_PROJECT_VERSION in project.yml).
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "v\(short) (build #\(build))"
     }
 }
 
@@ -55,5 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if AppConfig.isConfigured {
             Task { try? await DomainManager.activate(reset: false) }
         }
+
+        // Check for a newer release in the background (report-only, no auto-update).
+        Task { await UpdateChecker.shared.check() }
     }
 }
