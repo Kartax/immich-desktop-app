@@ -1,11 +1,15 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(\.dismiss) private var dismiss
+    /// Closes the hosting window. Injected by the AppKit status-item controller that
+    /// owns the settings window (there is no SwiftUI presentation to `dismiss`).
+    var onClose: () -> Void = {}
     @State private var serverURL = AppConfig.serverURL ?? ""
     @State private var apiKey = AppConfig.apiKey ?? ""
-    @State private var status = ""
+    @State private var result: Result?
     @State private var busy = false
+
+    private enum Result { case ok, failed }
 
     var body: some View {
         Form {
@@ -24,13 +28,12 @@ struct ContentView: View {
                     Button("Save & Activate") { Task { await save() } }
                         .keyboardShortcut(.defaultAction)
                     if busy { ProgressView().controlSize(.small) }
+                    if let result {
+                        Text(result == .ok ? "OK" : "Failed")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(result == .ok ? Color.green : Color.red)
+                    }
                 }
-            }
-            if !status.isEmpty {
-                Text(status)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .formStyle(.grouped)
@@ -39,30 +42,30 @@ struct ContentView: View {
 
     @MainActor
     private func test() async {
-        busy = true; defer { busy = false }
+        busy = true; result = nil; defer { busy = false }
         guard let client = ImmichClient(serverURL: serverURL, apiKey: apiKey) else {
-            status = "Invalid URL."; return
+            result = .failed; return
         }
         do {
-            let albums = try await client.albums()
-            status = "OK – found \(albums.count) album(s)."
+            _ = try await client.albums()
+            result = .ok
         } catch {
-            status = "Error: \(error.localizedDescription)"
+            result = .failed
         }
     }
 
     @MainActor
     private func save() async {
-        busy = true; defer { busy = false }
+        busy = true; result = nil; defer { busy = false }
         AppConfig.set(serverURL: serverURL, apiKey: apiKey)   // atomically into the App Group container
         do {
             try await DomainManager.activate(reset: true)
             await ConnectionMonitor.shared.check()   // refresh the menu bar icon right away
-            status = "Activated. Immich is now available in Finder and file dialogs."
+            result = .ok
             try? await Task.sleep(for: .seconds(0.8))   // show success briefly, then close
-            dismiss()
+            onClose()
         } catch {
-            status = "Domain error: \(error.localizedDescription)"
+            result = .failed
         }
     }
 }
