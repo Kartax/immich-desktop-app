@@ -28,6 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+        # Turn Pages on if it isn't already (so the repo needs no manual
+        # Settings → Pages step; requires the `pages: write` permission above).
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
