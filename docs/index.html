@@ -92,6 +92,10 @@
     }
     .btn:hover { transform: translateY(-1px); box-shadow: 0 14px 34px rgba(76, 141, 255, .45); }
     .btn-sub { display: block; color: var(--muted); font-size: .85rem; margin-top: 14px; }
+    .gh-links { margin-top: 16px; font-size: .88rem; }
+    .gh-links a { color: var(--muted); text-decoration: none; }
+    .gh-links a:hover { color: var(--text); }
+    .gh-sep { color: var(--border); margin: 0 8px; }
     .coffee { margin-top: 18px; }
     .badges {
       display: flex; flex-wrap: wrap; justify-content: center;
@@ -169,12 +173,20 @@
              alt="Total downloads" loading="lazy" />
       </div>
       <p class="tagline">
-        Your self-hosted Immich library, right in the macOS Finder and in every file
-        dialog. Photos show up as files and download on demand.
+	Your photos and videos from your immich library,<br/>
+	right in the macOS Finder and in every file
+        dialog.
       </p>
       <a class="btn" href="https://github.com/Kartax/immich-desktop-app/releases/latest/download/ImmichDesktop.dmg">
         Download for macOS
       </a>
+      <div class="gh-links">
+        <a href="https://github.com/Kartax/immich-desktop-app/issues/new">Report an issue</a>
+        <span class="gh-sep">·</span>
+        <a href="https://github.com/Kartax/immich-desktop-app">View source</a>
+        <span class="gh-sep">·</span>
+        <a href="https://github.com/Kartax/immich-desktop-app/releases">All releases</a>
+      </div>
       <div class="coffee">
         <script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js"
                 data-name="bmc-button" data-slug="Kartax" data-color="#FFDD00" data-emoji="🍺"
@@ -193,8 +205,7 @@
           <h2>Immich in the Finder sidebar</h2>
           <p class="tagline" style="font-size:1rem; margin:0;">
             Immich Desktop mounts your server as a location in the macOS Finder sidebar.
-            Browse an <strong>All Photos</strong> timeline by year and month, plus one
-            folder per album. Files appear with thumbnails — the original is fetched
+            Browse all items  by year and month, plus one folder per album. Files appear with thumbnails — the original is fetched
             only when you open it.
           </p>
         </div>
@@ -207,8 +218,7 @@
           <h2>Connect to your Immich server once</h2>
           <p class="tagline" style="font-size:1rem; margin:0;">
             Enter your Immich server URL and an API key, hit <em>Save &amp; Activate</em>,
-            and Immich shows up in Finder. Everything runs locally — your photos never
-            pass through anyone else's server.
+            and that's it. No synching or copying. Your photos and videos are directly served from your immich server.
           </p>
         </div>
         <div>
