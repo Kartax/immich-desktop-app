@@ -84,19 +84,27 @@
     }
     h1 { font-size: 2.6rem; margin: 0 0 14px; letter-spacing: -0.02em; }
     .tagline { color: var(--muted); font-size: 1.18rem; margin: 0 auto 30px; max-width: 560px; }
-    .btn {
-      display: inline-block; background: var(--accent); color: #fff;
-      text-decoration: none; font-weight: 600; padding: 14px 30px;
-      border-radius: 12px; transition: transform .15s, box-shadow .15s;
-      box-shadow: 0 10px 28px rgba(76, 141, 255, .35);
+    .btn-group {
+      display: inline-flex;
+      border-radius: 12px;
+      overflow: hidden;
+      gap: 1px;
+      background: rgba(0, 0, 0, .45);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, .35);
     }
-    .btn:hover { transform: translateY(-1px); box-shadow: 0 14px 34px rgba(76, 141, 255, .45); }
+    .btn {
+      display: inline-block;
+      text-decoration: none; font-weight: 600; padding: 14px 28px;
+      transition: filter .15s;
+    }
+    .btn:hover { filter: brightness(1.12); }
+    .btn-download { background: var(--accent); color: #fff; }
+    .btn-coffee { background: #FFDD00; color: #000; }
     .btn-sub { display: block; color: var(--muted); font-size: .85rem; margin-top: 14px; }
     .gh-links { margin-top: 16px; font-size: .88rem; }
     .gh-links a { color: var(--muted); text-decoration: none; }
     .gh-links a:hover { color: var(--text); }
     .gh-sep { color: var(--border); margin: 0 8px; }
-    .coffee { margin-top: 18px; }
     .badges {
       display: flex; flex-wrap: wrap; justify-content: center;
       gap: 8px; margin: 20px;
@@ -177,21 +185,20 @@
 	right in the macOS Finder and in every file
         dialog.
       </p>
-      <a class="btn" href="https://github.com/Kartax/immich-desktop-app/releases/latest/download/ImmichDesktop.dmg">
-        Download for macOS
-      </a>
+      <div class="btn-group">
+        <a class="btn btn-download" href="https://github.com/Kartax/immich-desktop-app/releases/latest/download/ImmichDesktop.dmg">
+          Download for macOS
+        </a>
+        <a class="btn btn-coffee" href="https://www.buymeacoffee.com/Kartax" target="_blank" rel="noopener">
+          🍺 Buy me a beer
+        </a>
+      </div>
       <div class="gh-links">
         <a href="https://github.com/Kartax/immich-desktop-app/issues/new">Report an issue</a>
         <span class="gh-sep">·</span>
         <a href="https://github.com/Kartax/immich-desktop-app">View source</a>
         <span class="gh-sep">·</span>
         <a href="https://github.com/Kartax/immich-desktop-app/releases">All releases</a>
-      </div>
-      <div class="coffee">
-        <script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js"
-                data-name="bmc-button" data-slug="Kartax" data-color="#FFDD00" data-emoji="🍺"
-                data-font="Cookie" data-text="Buy me a beer" data-outline-color="#000000"
-                data-font-color="#000000" data-coffee-color="#ffffff"></script>
       </div>
     </header>
 
