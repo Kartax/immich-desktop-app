@@ -135,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if settingsWindow == nil {
             let content = ContentView(onClose: { [weak self] in self?.settingsWindow?.close() })
-                .frame(width: 480, height: 500)
+                .frame(width: 480, height: 530)
             let window = NSWindow(contentViewController: NSHostingController(rootView: content))
             window.title = "Immich Desktop"
             window.styleMask = [.titled, .closable]

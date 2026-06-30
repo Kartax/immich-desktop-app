@@ -1,4 +1,5 @@
 import SwiftUI
+import ServiceManagement
 
 struct ContentView: View {
     /// Closes the hosting window. Injected by the AppKit status-item controller that
@@ -12,6 +13,7 @@ struct ContentView: View {
     @State private var showAlbums   = AppConfig.showAlbums
     @State private var showPersons  = AppConfig.showPersons
     @State private var showPlaces   = AppConfig.showPlaces
+    @State private var runOnStartup = SMAppService.mainApp.status == .enabled
 
     private enum Result { case ok, failed }
 
@@ -63,9 +65,33 @@ struct ContentView: View {
             } header: {
                 Text("Views in Finder")
             }
+            Section {
+                Toggle("Run on startup", isOn: $runOnStartup)
+                    .onChange(of: runOnStartup) { _, v in setRunOnStartup(v) }
+            } header: {
+                Text("System")
+            }
         }
         .formStyle(.grouped)
         .padding()
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            runOnStartup = SMAppService.mainApp.status == .enabled
+        }
+    }
+
+    @MainActor
+    private func setRunOnStartup(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            runOnStartup = SMAppService.mainApp.status == .enabled
+        } catch {
+            runOnStartup = SMAppService.mainApp.status == .enabled
+        }
     }
 
     @MainActor
