@@ -103,13 +103,15 @@ struct ImmichClient {
     func people() async throws -> [ImmichPerson] {
         let (data, _) = try await URLSession.shared.data(for: request("people"))
         let resp = try JSONDecoder().decode(ImmichPeopleResponse.self, from: data)
-        return resp.people.filter { !$0.isHidden && !$0.name.isEmpty }
+        return resp.people.filter { ($0.isHidden ?? false) == false && !($0.name ?? "").isEmpty }
     }
 
-    /// GET /api/people/{id}/assets
+    /// Assets for a person via POST /api/search/metadata with personIds filter.
     func assets(forPerson personId: String) async throws -> [ImmichAsset] {
-        let (data, _) = try await URLSession.shared.data(for: request("people/\(personId)/assets"))
-        return try JSONDecoder().decode([ImmichAsset].self, from: data)
+        return try await pagedSearch([
+            "personIds": [personId],
+            "withExif": true,
+        ])
     }
 
     // MARK: - Places

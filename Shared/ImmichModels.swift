@@ -21,15 +21,15 @@ struct ImmichExif: Codable {
 
 struct ImmichPerson: Codable {
     let id: String
-    let name: String
-    let numberOfAssets: Int
-    let isHidden: Bool
+    let name: String?        // "" or null for unnamed; filter on load
+    let numberOfAssets: Int? // absent in some Immich versions
+    let isHidden: Bool?      // nil treated as false
 }
 
 struct ImmichPeopleResponse: Codable {
     let people: [ImmichPerson]
-    let total: Int
-    let visible: Int
+    let total: Int?
+    let visible: Int?
 }
 
 struct ImmichAsset: Codable, Identifiable {

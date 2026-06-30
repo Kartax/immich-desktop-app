@@ -65,7 +65,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 case .persons:
                     let people = try await client.people()
                     observer.didEnumerate(people.map {
-                        FileProviderItem.personFolder(id: $0.id, name: $0.name)
+                        FileProviderItem.personFolder(id: $0.id, name: $0.name ?? "")
                     })
 
                 case .person:

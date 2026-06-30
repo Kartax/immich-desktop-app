@@ -61,7 +61,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     let people = try await client.people()
                     if let match = people.first(where: { $0.id == id.value }) {
                         completionHandler(
-                            FileProviderItem.personFolder(id: match.id, name: match.name), nil)
+                            FileProviderItem.personFolder(id: match.id, name: match.name ?? ""), nil)
                     } else {
                         completionHandler(nil, NSFileProviderError(.noSuchItem))
                     }
