@@ -4,8 +4,8 @@ import Observation
 /// Checks GitHub for a newer published release. This is *not* an auto-updater: it
 /// only reports whether a newer version exists and points at the download page.
 ///
-/// Releases are published as tags `vX.Y.Z` in the public distribution repo
-/// `Kartax/immich-desktop-app-public` (see scripts/release.sh). We read the
+/// Releases are published as tags `vX.Y.Z` in this repo
+/// `Kartax/immich-desktop-app` (see scripts/release.sh). We read the
 /// latest release via the unauthenticated GitHub API (60 req/h per IP is plenty
 /// for a launch check plus the occasional manual click).
 @MainActor
@@ -40,11 +40,11 @@ final class UpdateChecker {
     }
 
     /// Public GitHub Pages download site.
-    static let downloadPageURL = URL(string: "https://kartax.github.io/immich-desktop-app-public/")!
+    static let downloadPageURL = URL(string: "https://kartax.github.io/immich-desktop-app/")!
 
-    /// Latest published release of the public distribution repo.
+    /// Latest published release of this repo.
     private static let latestReleaseAPI = URL(
-        string: "https://api.github.com/repos/Kartax/immich-desktop-app-public/releases/latest")!
+        string: "https://api.github.com/repos/Kartax/immich-desktop-app/releases/latest")!
 
     private struct Release: Decodable { let tag_name: String }
 

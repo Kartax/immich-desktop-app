@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://kartax.github.io/immich-desktop-app/sitemap.xml

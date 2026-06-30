@@ -8,10 +8,9 @@ them.
 
 Read-only: the app never modifies anything on the server.
 
-**Download & info:** https://kartax.github.io/immich-desktop-app-public/ — a notarized
-`.dmg` for macOS 14+. This repo holds the source; the download page and release
-binaries live in the public [`immich-desktop-app-public`](https://github.com/Kartax/immich-desktop-app-public)
-repo.
+**Download & info:** https://kartax.github.io/immich-desktop-app/ — a notarized
+`.dmg` for macOS 14+. This repo holds everything: the source, the download page
+(`docs/`, served via GitHub Pages) and the release binaries (GitHub Releases).
 
 ## What it does
 

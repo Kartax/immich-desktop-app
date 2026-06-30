@@ -17,7 +17,7 @@
 #   ./scripts/release.sh              # build + notarize a local .dmg only
 #   ./scripts/release.sh v0.1.0       # ...and publish it as a GitHub Release
 #
-# Publishing uploads the .dmg to the public distribution repo (PUBLISH_REPO) via
+# Publishing uploads the .dmg to this repo's GitHub Releases (PUBLISH_REPO) via
 # the GitHub CLI. Install + authenticate it once: `brew install gh && gh auth login`.
 #
 # Override the notary profile with NOTARY_PROFILE=<name> if you named it differently.
@@ -29,8 +29,8 @@ PROJECT="ImmichDesktop.xcodeproj"
 SCHEME="ImmichDesktop"
 APP_NAME="ImmichDesktop"
 NOTARY_PROFILE="${NOTARY_PROFILE:-NOTARY}"
-# Public repo that hosts the download page and release binaries (Option B).
-PUBLISH_REPO="${PUBLISH_REPO:-Kartax/immich-desktop-app-public}"
+# This same repo hosts the download page (docs/ via Pages) and release binaries.
+PUBLISH_REPO="${PUBLISH_REPO:-Kartax/immich-desktop-app}"
 VERSION="${1:-}"   # e.g. v0.1.0 — when set, the .dmg is published as a Release
 
 # Resolve repo root up front (this script lives in scripts/) so all git and build
@@ -177,20 +177,22 @@ if [[ -n "$VERSION" ]]; then
     exit 1
   fi
   echo "==> Publishing $VERSION to $PUBLISH_REPO"
+  # Source and release repo are now the same, so let `gh release create` create
+  # the tag itself — at the exact built commit (--target). Doing it in one step
+  # keeps the "tag only on a successful publish" property (a failed upload never
+  # leaves an orphan tag) without a separate git tag/push that would collide.
   gh release create "$VERSION" "$DMG" \
     --repo "$PUBLISH_REPO" \
+    --target "$(git rev-parse HEAD)" \
     --title "$VERSION" \
     --notes "Immich Desktop $VERSION — notarized, macOS 14+. Download \`ImmichDesktop.dmg\`, move it to Applications, then enter your Immich server URL and API key from the menu bar.
 
-Built from source commit \`$COMMIT\` (private repo)."
+Built from source commit \`$COMMIT\`."
   echo "Published: https://github.com/$PUBLISH_REPO/releases/tag/$VERSION"
 
-  # Tag the exact built source in the code repo and push it. Done last so a failed
-  # build/upload never leaves an orphan tag. HEAD == built source (clean tree was
-  # enforced above; build/ is gitignored).
-  echo "==> Tagging source $VERSION ($COMMIT) and pushing to origin"
-  git tag -a "$VERSION" -m "Release $VERSION"
-  git push origin "$VERSION"
+  # Sync the tag gh just created on the remote into the local clone.
+  echo "==> Fetching tag $VERSION ($COMMIT) from origin"
+  git fetch origin --tags
 fi
 
 echo

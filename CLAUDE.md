@@ -108,6 +108,28 @@ network and asset/album metadata with a fetch. Originals are fetched lazily in
   root cause is `fileproviderd`, not the app — clear it with `killall fileproviderd`
   (dev only), not by renaming the identifier.
 
+## Distribution (download page + releases, all in this repo)
+
+This repo is public and is the single home for both the source and the distribution:
+
+- **Download page** — a static `docs/index.html` (plain HTML, inline `<style>`, no
+  build step) served via **GitHub Pages** at
+  https://kartax.github.io/immich-desktop-app/. `.github/workflows/pages.yml` deploys
+  `docs/` on every push to `main` that touches it (Pages Source must be set to
+  "GitHub Actions" in repo settings). Assets in `docs/`: `finder.png` + `settings.png`
+  (screenshots), `logo.png` + `logo@2x.png` (favicon/OG image), `robots.txt` +
+  `sitemap.xml`. **`logo.png` / `logo@2x.png` are copies of the app icon**
+  (`ImmichDesktop/Assets.xcassets/AppIcon.appiconset/icon_512.png` / `icon_1024.png`) —
+  recopy them when the icon changes. The canonical URL is hard-coded across
+  `index.html` (canonical/OG/Twitter/JSON-LD), `sitemap.xml`, and `robots.txt`; update
+  all three if it ever changes.
+- **Releases** — `scripts/release.sh vX.Y.Z` builds, signs, notarizes the `.dmg` and
+  publishes it as a GitHub Release **in this same repo** (`gh release create`, which
+  also creates the `vX.Y.Z` tag at the built commit). `UpdateChecker.swift` reads this
+  repo's `releases/latest` for the in-app update check. (Older builds were distributed
+  from a separate `immich-desktop-app-public` repo; that history is migrated here. Do
+  not point new work back at the `-public` repo.)
+
 ## Conventions
 
 - Bundle id prefix is `org.kartax`; App Group is `group.org.kartax.ImmichDesktop`.
