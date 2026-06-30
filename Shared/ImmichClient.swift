@@ -90,19 +90,66 @@ struct ImmichClient {
     /// All assets of a month ("YYYY-MM") via paginated metadata search.
     func assets(inMonth month: String) async throws -> [ImmichAsset] {
         let (after, before) = ImmichClient.monthRange(month)
+        return try await pagedSearch([
+            "takenAfter": after,
+            "takenBefore": before,
+            "withExif": true,   // provides exifInfo.fileSizeInByte – otherwise size 0, no download
+        ])
+    }
+
+    // MARK: - Persons
+
+    /// GET /api/people — returns only visible, named persons.
+    func people() async throws -> [ImmichPerson] {
+        let (data, _) = try await URLSession.shared.data(for: request("people"))
+        let resp = try JSONDecoder().decode(ImmichPeopleResponse.self, from: data)
+        return resp.people.filter { !$0.isHidden && !$0.name.isEmpty }
+    }
+
+    /// GET /api/people/{id}/assets
+    func assets(forPerson personId: String) async throws -> [ImmichAsset] {
+        let (data, _) = try await URLSession.shared.data(for: request("people/\(personId)/assets"))
+        return try JSONDecoder().decode([ImmichAsset].self, from: data)
+    }
+
+    // MARK: - Places
+
+    /// GET /api/search/suggestions?type=country — all unique country name strings.
+    func countries() async throws -> [String] {
+        let (data, _) = try await URLSession.shared.data(
+            for: request("search/suggestions?type=country"))
+        return try JSONDecoder().decode([String].self, from: data).sorted()
+    }
+
+    /// GET /api/search/suggestions?type=city&country={name} — unique city names for a country.
+    func cities(inCountry country: String) async throws -> [String] {
+        let encoded = country.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? country
+        let (data, _) = try await URLSession.shared.data(
+            for: request("search/suggestions?type=city&country=\(encoded)"))
+        return try JSONDecoder().decode([String].self, from: data).sorted()
+    }
+
+    /// POST /api/search/metadata filtered by city + country.
+    func assets(inCity city: String, country: String) async throws -> [ImmichAsset] {
+        return try await pagedSearch([
+            "city": city,
+            "country": country,
+            "withExif": true,
+        ])
+    }
+
+    // MARK: - Private helpers
+
+    private func pagedSearch(_ baseBody: [String: Any]) async throws -> [ImmichAsset] {
         var out: [ImmichAsset] = []
         var page = 1
         while true {
             var req = request("search/metadata")
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let body: [String: Any] = [
-                "takenAfter": after,
-                "takenBefore": before,
-                "size": 1000,
-                "page": page,
-                "withExif": true,   // provides exifInfo.fileSizeInByte – otherwise size 0, no download
-            ]
+            var body = baseBody
+            body["size"] = 1000
+            body["page"] = page
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder().decode(ImmichSearchResponse.self, from: data)

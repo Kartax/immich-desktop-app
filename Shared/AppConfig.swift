@@ -16,6 +16,10 @@ enum AppConfig {
     private struct Stored: Codable {
         var serverURL: String?
         var apiKey: String?
+        var showTimeline: Bool?   // nil → true (default on, so old config files show all views)
+        var showPersons: Bool?
+        var showPlaces: Bool?
+        var showAlbums: Bool?
     }
 
     private static var fileURL: URL? {
@@ -48,14 +52,37 @@ enum AppConfig {
         set { var s = load(); s.apiKey = newValue; store(s) }
     }
 
+    static var showTimeline: Bool {
+        get { load().showTimeline ?? true }
+        set { var s = load(); s.showTimeline = newValue; store(s) }
+    }
+
+    static var showPersons: Bool {
+        get { load().showPersons ?? true }
+        set { var s = load(); s.showPersons = newValue; store(s) }
+    }
+
+    static var showPlaces: Bool {
+        get { load().showPlaces ?? true }
+        set { var s = load(); s.showPlaces = newValue; store(s) }
+    }
+
+    static var showAlbums: Bool {
+        get { load().showAlbums ?? true }
+        set { var s = load(); s.showAlbums = newValue; store(s) }
+    }
+
     static var isConfigured: Bool {
         let s = load()
         return !(s.serverURL ?? "").isEmpty && !(s.apiKey ?? "").isEmpty
     }
 
-    /// Set both values atomically in a single write.
+    /// Set server credentials atomically without touching view-toggle flags.
     static func set(serverURL: String, apiKey: String) {
-        store(Stored(serverURL: serverURL, apiKey: apiKey))
+        var s = load()
+        s.serverURL = serverURL
+        s.apiKey = apiKey
+        store(s)
     }
 
     static func flush() { /* file write is already synchronous/atomic */ }

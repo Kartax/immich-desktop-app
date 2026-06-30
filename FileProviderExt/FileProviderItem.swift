@@ -51,6 +51,32 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
                   contentType: .folder, isFolder: true, size: nil)
     }
 
+    static func personsFolder() -> FileProviderItem {
+        FileProviderItem(identifier: ItemID.persons, parent: .rootContainer,
+                         filename: "Persons", contentType: .folder, isFolder: true, size: nil)
+    }
+
+    static func personFolder(id: String, name: String) -> FileProviderItem {
+        FileProviderItem(identifier: ItemID.person(id), parent: ItemID.persons,
+                         filename: sanitize(name), contentType: .folder, isFolder: true, size: nil)
+    }
+
+    static func placesFolder() -> FileProviderItem {
+        FileProviderItem(identifier: ItemID.places, parent: .rootContainer,
+                         filename: "Places", contentType: .folder, isFolder: true, size: nil)
+    }
+
+    static func countryFolder(_ country: String) -> FileProviderItem {
+        FileProviderItem(identifier: ItemID.country(country), parent: ItemID.places,
+                         filename: sanitize(country), contentType: .folder, isFolder: true, size: nil)
+    }
+
+    static func cityFolder(country: String, city: String) -> FileProviderItem {
+        FileProviderItem(identifier: ItemID.city(country: country, city: city),
+                         parent: ItemID.country(country),
+                         filename: sanitize(city), contentType: .folder, isFolder: true, size: nil)
+    }
+
     // MARK: File (asset)
 
     convenience init(asset: ImmichAsset, parent: NSFileProviderItemIdentifier) {

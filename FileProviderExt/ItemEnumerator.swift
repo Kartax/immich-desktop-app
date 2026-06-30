@@ -24,9 +24,14 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 let id = ItemID(container)
                 switch id.kind {
                 case .root:
-                    var items: [FileProviderItem] = [FileProviderItem.timelineFolder()]
-                    let albums = try await client.albums()
-                    items.append(contentsOf: albums.map { FileProviderItem(album: $0) })
+                    var items: [FileProviderItem] = []
+                    if AppConfig.showTimeline { items.append(.timelineFolder()) }
+                    if AppConfig.showPersons  { items.append(.personsFolder()) }
+                    if AppConfig.showPlaces   { items.append(.placesFolder()) }
+                    if AppConfig.showAlbums {
+                        let albums = try await client.albums()
+                        items.append(contentsOf: albums.map { FileProviderItem(album: $0) })
+                    }
                     observer.didEnumerate(items)
 
                 case .timeline:
@@ -55,6 +60,38 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     let detail = try await client.album(id: id.value)
                     observer.didEnumerate(detail.assets.map {
                         FileProviderItem(asset: $0, parent: ItemID.album(detail.id))
+                    })
+
+                case .persons:
+                    let people = try await client.people()
+                    observer.didEnumerate(people.map {
+                        FileProviderItem.personFolder(id: $0.id, name: $0.name)
+                    })
+
+                case .person:
+                    let assets = try await client.assets(forPerson: id.value)
+                    observer.didEnumerate(assets.map {
+                        FileProviderItem(asset: $0, parent: ItemID.person(id.value))
+                    })
+
+                case .places:
+                    let cs = try await client.countries()
+                    observer.didEnumerate(cs.map { FileProviderItem.countryFolder($0) })
+
+                case .country:
+                    let cities = try await client.cities(inCountry: id.value)
+                    observer.didEnumerate(cities.map {
+                        FileProviderItem.cityFolder(country: id.value, city: $0)
+                    })
+
+                case .city:
+                    guard let (country, city) = id.cityComponents else {
+                        observer.finishEnumerating(upTo: nil); return
+                    }
+                    let assets = try await client.assets(inCity: city, country: country)
+                    let parentId = ItemID.city(country: country, city: city)
+                    observer.didEnumerate(assets.map {
+                        FileProviderItem(asset: $0, parent: parentId)
                     })
 
                 case .asset:

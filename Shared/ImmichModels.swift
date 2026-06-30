@@ -14,6 +14,22 @@ struct ImmichAlbumDetail: Codable, Identifiable {
 
 struct ImmichExif: Codable {
     let fileSizeInByte: Int?
+    let city: String?
+    let state: String?
+    let country: String?
+}
+
+struct ImmichPerson: Codable {
+    let id: String
+    let name: String
+    let numberOfAssets: Int
+    let isHidden: Bool
+}
+
+struct ImmichPeopleResponse: Codable {
+    let people: [ImmichPerson]
+    let total: Int
+    let visible: Int
 }
 
 struct ImmichAsset: Codable, Identifiable {

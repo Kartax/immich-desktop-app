@@ -37,6 +37,13 @@ enum DomainManager {
         }
     }
 
+    /// Signals Finder to re-enumerate the root container without a full domain reset.
+    /// Use after toggling view visibility so changes appear immediately with no cache loss.
+    static func signalRoot() async {
+        guard let manager = NSFileProviderManager(for: domain) else { return }
+        try? await manager.signalEnumerator(for: .rootContainer)
+    }
+
     /// Removes all of this app's domains so Immich disappears from Finder.
     static func deactivate() async {
         let existing = (try? await NSFileProviderManager.domains()) ?? []

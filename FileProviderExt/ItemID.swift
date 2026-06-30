@@ -3,15 +3,21 @@ import FileProvider
 /// Encodes/decodes an item's identity as an NSFileProviderItemIdentifier.
 ///
 /// Scheme (separator "|"):
-///   root                 -> NSFileProviderItemIdentifier.rootContainer
-///   "All Photos"         -> "timeline"
-///   Year                 -> "year|2024"
-///   Month                -> "month|2024-03"
-///   Album                -> "album|<albumId>"
-///   Asset                -> "asset|<parentRaw>|<assetId>"  (parent identifier embedded
-///                            so the same asset can exist under both an album and a month)
+///   root                        -> NSFileProviderItemIdentifier.rootContainer
+///   "All Photos"                -> "timeline"
+///   Year                        -> "year|2024"
+///   Month                       -> "month|2024-03"
+///   Album                       -> "album|<albumId>"
+///   Persons root                -> "persons"
+///   Person                      -> "person|<personId>"
+///   Places root                 -> "places"
+///   Country                     -> "place|<countryName>"
+///   City                        -> "place|<countryName>|<cityName>"
+///   Asset                       -> "asset|<parentRaw>|<assetId>"  (parent identifier embedded
+///                                   so the same asset can exist under both an album and a month;
+///                                   parentRaw may itself contain "|", assetId never does)
 struct ItemID {
-    enum Kind { case root, timeline, year, month, album, asset }
+    enum Kind { case root, timeline, year, month, album, asset, persons, person, places, country, city }
 
     let kind: Kind
     let value: String                              // year, "YYYY-MM", albumId or assetId
@@ -49,12 +55,30 @@ struct ItemID {
             kind = .month; value = parts[1]; parent = ItemID.year(String(parts[1].prefix(4)))
         case "album" where parts.count >= 2:
             kind = .album; value = parts[1]; parent = .rootContainer
+        case "persons":
+            kind = .persons; value = ""; parent = .rootContainer
+        case "person" where parts.count >= 2:
+            kind = .person; value = parts[1]; parent = ItemID.persons
+        case "places":
+            kind = .places; value = ""; parent = .rootContainer
+        case "place" where parts.count == 2:
+            kind = .country; value = parts[1]; parent = ItemID.places
+        case "place" where parts.count >= 3:
+            kind = .city; value = "\(parts[1])|\(parts[2])"; parent = ItemID.country(parts[1])
         default:
             kind = .root; value = ""; parent = nil
         }
     }
 
+    /// For .city kind, decomposes the compound value "France|Paris" → (country, city).
+    var cityComponents: (country: String, city: String)? {
+        guard kind == .city, let sep = value.firstIndex(of: "|") else { return nil }
+        return (String(value[..<sep]), String(value[value.index(after: sep)...]))
+    }
+
     static let timeline = NSFileProviderItemIdentifier(rawValue: "timeline")
+    static let persons  = NSFileProviderItemIdentifier(rawValue: "persons")
+    static let places   = NSFileProviderItemIdentifier(rawValue: "places")
 
     static func year(_ year: String) -> NSFileProviderItemIdentifier {
         NSFileProviderItemIdentifier(rawValue: "year|\(year)")
@@ -66,6 +90,18 @@ struct ItemID {
 
     static func album(_ id: String) -> NSFileProviderItemIdentifier {
         NSFileProviderItemIdentifier(rawValue: "album|\(id)")
+    }
+
+    static func person(_ id: String) -> NSFileProviderItemIdentifier {
+        NSFileProviderItemIdentifier(rawValue: "person|\(id)")
+    }
+
+    static func country(_ name: String) -> NSFileProviderItemIdentifier {
+        NSFileProviderItemIdentifier(rawValue: "place|\(name)")
+    }
+
+    static func city(country: String, city: String) -> NSFileProviderItemIdentifier {
+        NSFileProviderItemIdentifier(rawValue: "place|\(country)|\(city)")
     }
 
     static func asset(_ assetId: String,

@@ -8,6 +8,10 @@ struct ContentView: View {
     @State private var apiKey = AppConfig.apiKey ?? ""
     @State private var result: Result?
     @State private var busy = false
+    @State private var showTimeline = AppConfig.showTimeline
+    @State private var showAlbums   = AppConfig.showAlbums
+    @State private var showPersons  = AppConfig.showPersons
+    @State private var showPlaces   = AppConfig.showPlaces
 
     private enum Result { case ok, failed }
 
@@ -34,6 +38,30 @@ struct ContentView: View {
                             .foregroundStyle(result == .ok ? Color.green : Color.red)
                     }
                 }
+            }
+            Section {
+                Toggle("All Photos", isOn: $showTimeline)
+                    .onChange(of: showTimeline) { _, v in
+                        AppConfig.showTimeline = v
+                        Task { await DomainManager.signalRoot() }
+                    }
+                Toggle("Albums", isOn: $showAlbums)
+                    .onChange(of: showAlbums) { _, v in
+                        AppConfig.showAlbums = v
+                        Task { await DomainManager.signalRoot() }
+                    }
+                Toggle("Persons", isOn: $showPersons)
+                    .onChange(of: showPersons) { _, v in
+                        AppConfig.showPersons = v
+                        Task { await DomainManager.signalRoot() }
+                    }
+                Toggle("Places", isOn: $showPlaces)
+                    .onChange(of: showPlaces) { _, v in
+                        AppConfig.showPlaces = v
+                        Task { await DomainManager.signalRoot() }
+                    }
+            } header: {
+                Text("Views in Finder")
             }
         }
         .formStyle(.grouped)

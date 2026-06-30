@@ -25,7 +25,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         case .year:     staticFolder = FileProviderItem.yearFolder(id.value)
         case .month:    staticFolder = FileProviderItem.monthFolder(
                             value: id.value, display: TimelineFormat.monthDisplay(id.value))
-        case .album, .asset: staticFolder = nil
+        case .persons:  staticFolder = FileProviderItem.personsFolder()
+        case .places:   staticFolder = FileProviderItem.placesFolder()
+        case .country:  staticFolder = FileProviderItem.countryFolder(id.value)
+        case .city:     staticFolder = id.cityComponents.map {
+                            FileProviderItem.cityFolder(country: $0.country, city: $0.city)
+                        }
+        case .album, .asset, .person: staticFolder = nil
         }
         if let folder = staticFolder {
             completionHandler(folder, nil)
@@ -51,6 +57,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     let asset = try await client.asset(id: id.value)
                     completionHandler(
                         FileProviderItem(asset: asset, parent: id.parent ?? .rootContainer), nil)
+                case .person:
+                    let people = try await client.people()
+                    if let match = people.first(where: { $0.id == id.value }) {
+                        completionHandler(
+                            FileProviderItem.personFolder(id: match.id, name: match.name), nil)
+                    } else {
+                        completionHandler(nil, NSFileProviderError(.noSuchItem))
+                    }
                 default:
                     completionHandler(nil, NSFileProviderError(.noSuchItem))
                 }
