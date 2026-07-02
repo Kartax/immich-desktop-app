@@ -73,10 +73,24 @@ struct ImmichClient {
         return dest
     }
 
-    func thumbnail(id: String) async throws -> Data {
+    /// Server-generated image sizes for GET /assets/{id}/thumbnail. `fullsize` is
+    /// deliberately absent — it only exists on newer Immich servers.
+    enum ThumbnailSize: String {
+        case thumbnail   // small, for grid tiles
+        case preview     // larger, for enlarged views
+    }
+
+    func thumbnail(id: String, size: ThumbnailSize = .thumbnail) async throws -> Data {
         let (data, _) = try await URLSession.shared.data(
-            for: request("assets/\(id)/thumbnail?size=thumbnail"))
+            for: request("assets/\(id)/thumbnail?size=\(size.rawValue)"))
         return data
+    }
+
+    /// URL + auth header for streaming a video with AVPlayer (the server transcodes
+    /// when needed). Inject the headers via `AVURLAssetHTTPHeaderFieldsKey`.
+    func videoPlaybackResource(id: String) -> (url: URL, headers: [String: String]) {
+        (URL(string: baseURL.absoluteString + "/assets/\(id)/video/playback")!,
+         ["x-api-key": apiKey])
     }
 
     // MARK: - Timeline (All Photos by year/month)
@@ -85,6 +99,30 @@ struct ImmichClient {
         let (data, _) = try await URLSession.shared.data(
             for: request("timeline/buckets?size=MONTH"))
         return try JSONDecoder().decode([ImmichTimeBucket].self, from: data)
+    }
+
+    /// One page of the global "All Photos" timeline, newest first. Unlike `pagedSearch`
+    /// this fetches a SINGLE page — the gallery pages in more while scrolling instead
+    /// of materializing the whole library. `takenBefore` anchors the timeline at a
+    /// date (gallery "jump to month") without loading any intervening pages.
+    func assetsPage(page: Int, size: Int = 200,
+                    takenBefore: String? = nil) async throws -> (assets: [ImmichAsset], nextPage: Int?) {
+        var req = request("search/metadata")
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "page": page,
+            "size": size,
+            "order": "desc",
+        ]
+        if let takenBefore { body["takenBefore"] = takenBefore }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let resp = try JSONDecoder().decode(ImmichSearchResponse.self, from: data)
+        return (resp.assets.items, resp.assets.nextPage.flatMap(Int.init))
     }
 
     /// All assets of a month ("YYYY-MM") via paginated metadata search.

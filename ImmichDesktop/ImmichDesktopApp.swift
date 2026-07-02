@@ -15,9 +15,10 @@ struct ImmichDesktopApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
+    private var galleryWindow: NSWindow?
 
     // Menu bar icon — same SF Symbol as the Finder sidebar (FileProviderExt Info.plist
     // CFBundleSymbolName), so menu bar and Finder match. A template image so the system
@@ -29,7 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         image?.isTemplate = true
         return image
     }()
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
 
@@ -92,6 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addUpdateItems(to: menu)
 
         menu.addItem(.separator())
+        // Always enabled — the gallery itself renders a "not configured" state.
+        let gallery = menu.addItem(withTitle: "View Gallery", action: #selector(openGallery),
+                                   keyEquivalent: "")
+        gallery.target = self
+        gallery.image = Self.icon    // same symbol as tray + Finder sidebar
         menu.addItem(withTitle: "Open Settings…", action: #selector(openSettings), keyEquivalent: "")
             .target = self
         menu.addItem(.separator())
@@ -119,6 +124,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() { showSettings() }
 
+    @objc private func openGallery() { showGallery() }
+
     @objc private func openDownloadPage() { NSWorkspace.shared.open(UpdateChecker.downloadPageURL) }
 
     @objc private func quit() {
@@ -144,6 +151,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settingsWindow = window
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Gallery window (AppKit-hosted SwiftUI)
+
+    @MainActor private func showGallery() {
+        NSApp.activate(ignoringOtherApps: true)
+        if galleryWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: GalleryView()))
+            window.title = "Immich Desktop"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 1000, height: 700))
+            window.contentMinSize = NSSize(width: 640, height: 480)
+            window.isReleasedWhenClosed = false
+            window.center()
+            // Unlike the settings window, this one is discarded on close (see
+            // windowWillClose): frees the asset list + thumbnail cache and gives a
+            // fresh timeline on reopen.
+            window.delegate = self
+            galleryWindow = window
+        }
+        galleryWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === galleryWindow {
+            galleryWindow = nil
+        }
     }
 
     // MARK: - Version
