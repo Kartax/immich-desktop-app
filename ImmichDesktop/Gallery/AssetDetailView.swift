@@ -62,7 +62,7 @@ struct AssetDetailView: View {
 
     @ViewBuilder private var content: some View {
         if let player {
-            VideoPlayer(player: player)
+            PlayerView(player: player)
         } else if let image {
             Image(nsImage: image)
                 .resizable()
@@ -108,12 +108,16 @@ struct AssetDetailView: View {
         let resource = client.videoPlaybackResource(id: asset.id)
         let avAsset = AVURLAsset(url: resource.url,
                                  options: ["AVURLAssetHTTPHeaderFieldsKey": resource.headers])
-        do {
-            _ = try await avAsset.load(.isPlayable)
+        if (try? await avAsset.load(.isPlayable)) == true {
             player = AVPlayer(playerItem: AVPlayerItem(asset: avAsset))
-        } catch {
-            // Streaming refused (e.g. key scope) — fall back to the original file.
-            guard let local = try? await client.downloadOriginal(id: asset.id) else {
+        } else {
+            // Streaming refused (e.g. key scope) or the served container isn't
+            // playable (e.g. an original AVI with no server transcode) — fall
+            // back to the original file, but only hand AVPlayer something it
+            // can actually play; otherwise show the failure state instead of a
+            // dead player.
+            guard let local = try? await client.downloadOriginal(id: asset.id),
+                  (try? await AVURLAsset(url: local).load(.isPlayable)) == true else {
                 loadFailed = true
                 return
             }
@@ -126,5 +130,24 @@ struct AssetDetailView: View {
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
+    }
+}
+
+/// Hosts AVKit's AppKit `AVPlayerView` directly. SwiftUI's `VideoPlayer`
+/// (_AVKit_SwiftUI) must not be used here: on macOS 26.5 its first
+/// instantiation outside the debugger aborts in the Swift runtime
+/// ("failed to demangle superclass"), killing the whole app.
+private struct PlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        view.player = player
     }
 }
