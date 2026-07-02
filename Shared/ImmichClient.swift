@@ -53,9 +53,21 @@ struct ImmichClient {
         return try JSONDecoder().decode([ImmichAlbum].self, from: data)
     }
 
-    func album(id: String) async throws -> ImmichAlbumDetail {
+    /// Album metadata only. Since Immich v3 the album response no longer contains
+    /// the asset list — fetch assets via `assets(inAlbum:)` instead.
+    func album(id: String) async throws -> ImmichAlbum {
         let (data, _) = try await URLSession.shared.data(for: request("albums/\(id)"))
-        return try JSONDecoder().decode(ImmichAlbumDetail.self, from: data)
+        return try JSONDecoder().decode(ImmichAlbum.self, from: data)
+    }
+
+    /// All assets of an album via metadata search (the v3 replacement for the
+    /// removed `assets` field of GET /albums/{id}). No visibility filter: albums
+    /// include archived assets, matching the old endpoint's behavior.
+    func assets(inAlbum albumId: String) async throws -> [ImmichAsset] {
+        return try await pagedSearch([
+            "albumIds": [albumId],
+            "withExif": true,
+        ])
     }
 
     func asset(id: String) async throws -> ImmichAsset {
@@ -95,9 +107,11 @@ struct ImmichClient {
 
     // MARK: - Timeline (All Photos by year/month)
 
+    /// Buckets are month-granularity by default; the former `size=MONTH` parameter
+    /// was removed in v3 (Zod rejects unknown query parameters).
     func monthBuckets() async throws -> [ImmichTimeBucket] {
         let (data, _) = try await URLSession.shared.data(
-            for: request("timeline/buckets?size=MONTH"))
+            for: request("timeline/buckets"))
         return try JSONDecoder().decode([ImmichTimeBucket].self, from: data)
     }
 
@@ -114,6 +128,9 @@ struct ImmichClient {
             "page": page,
             "size": size,
             "order": "desc",
+            // Since v3 the search defaults to any visibility (archived, hidden, …);
+            // pin it to keep the timeline showing only timeline-visible assets.
+            "visibility": "timeline",
         ]
         if let takenBefore { body["takenBefore"] = takenBefore }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -132,6 +149,7 @@ struct ImmichClient {
             "takenAfter": after,
             "takenBefore": before,
             "withExif": true,   // provides exifInfo.fileSizeInByte – otherwise size 0, no download
+            "visibility": "timeline",   // v3 defaults to any visibility; keep archived/hidden out
         ])
     }
 
@@ -149,6 +167,7 @@ struct ImmichClient {
         return try await pagedSearch([
             "personIds": [personId],
             "withExif": true,
+            "visibility": "timeline",   // v3 defaults to any visibility; keep archived/hidden out
         ])
     }
 
@@ -175,6 +194,7 @@ struct ImmichClient {
             "city": city,
             "country": country,
             "withExif": true,
+            "visibility": "timeline",   // v3 defaults to any visibility; keep archived/hidden out
         ])
     }
 

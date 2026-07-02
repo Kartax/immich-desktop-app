@@ -6,12 +6,6 @@ struct ImmichAlbum: Codable, Identifiable {
     let assetCount: Int?
 }
 
-struct ImmichAlbumDetail: Codable, Identifiable {
-    let id: String
-    let albumName: String
-    let assets: [ImmichAsset]
-}
-
 struct ImmichExif: Codable {
     let fileSizeInByte: Int?
     let city: String?

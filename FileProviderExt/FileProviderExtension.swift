@@ -48,10 +48,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             do {
                 switch id.kind {
                 case .album:
-                    let detail = try await client.album(id: id.value)
-                    let album = ImmichAlbum(id: detail.id,
-                                            albumName: detail.albumName,
-                                            assetCount: detail.assets.count)
+                    let album = try await client.album(id: id.value)
                     completionHandler(FileProviderItem(album: album), nil)
                 case .asset:
                     let asset = try await client.asset(id: id.value)

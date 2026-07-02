@@ -76,7 +76,7 @@ would crash `ForEach`. `ThumbnailLoader` caches decoded `NSImage`s in a bounded
 `thumbnail(id:size: .preview)` — never `fullsize`, older servers lack it — and
 streams video via `AVURLAsset` + `AVURLAssetHTTPHeaderFieldsKey` (`x-api-key`),
 falling back to `downloadOriginal` when streaming fails (e.g. key scope). The
-"Jump to" menu (data: one `/timeline/buckets?size=MONTH` call) re-anchors paging
+"Jump to" menu (data: one `/timeline/buckets` call) re-anchors paging
 via `takenBefore` and resets the list — a jump costs one request, never the pages
 in between; scrolling *up* past the anchor is deliberately unsupported (jump again
 or pick "Latest"). A `generation` counter in the view model keeps stale in-flight
@@ -111,8 +111,10 @@ load-more tasks from appending to a reset list.
 ### The folder tree
 
 Root contains an **"All Photos"** timeline folder (Year → Month → assets, from
-`/timeline/buckets?size=MONTH` + `POST /search/metadata`) plus one folder per
-**album** (`/albums`, `/albums/{id}`). `ItemEnumerator` maps each container kind to
+`/timeline/buckets` + `POST /search/metadata`) plus one folder per
+**album** (`/albums` for the list, `/albums/{id}` for metadata; album *assets* come
+from `POST /search/metadata` with `albumIds` — since Immich v3 the album response
+has no `assets` field). `ItemEnumerator` maps each container kind to
 the right call; `FileProviderExtension.item(for:)` answers folder metadata without
 network and asset/album metadata with a fetch. Originals are fetched lazily in
 `fetchContents`; grid previews in `fetchThumbnails`.
@@ -122,6 +124,17 @@ network and asset/album metadata with a fetch. Originals are fetched lazily in
 - **`withExif: true` in the metadata search** is required: without it Immich omits
   `exifInfo.fileSizeInByte`, the item reports size 0, and macOS then skips the content
   download entirely (0-byte files, Quick Look errors).
+- **The client targets Immich v3** (`ImmichClient` was adapted for its breaking
+  changes): every non-album metadata search pins `visibility: "timeline"`, because
+  the v3 default is *any* visibility (except `locked`) and would surface
+  archived/hidden assets in All Photos/Persons/Places. The album search (`albumIds`)
+  deliberately omits it — albums keep showing their archived assets, like the old
+  album endpoint did. `/timeline/buckets` is called without the removed `size=MONTH`
+  parameter (buckets are always months since v1.133). **Minimum supported server:
+  v1.135.0** (introduced the `albumIds` search filter; on older servers the filter
+  would be stripped and an album folder would enumerate the entire library). This
+  floor is unavoidable without version-sniffing fallbacks: v3 removed the album
+  `assets` field, and its replacement only exists from v1.135 on.
 - **`itemVersion` is derived from size+filename**, not constant — otherwise a size
   change (e.g. 0 → real) is treated as cached and never updates.
 - **`NSFileProviderThumbnailing` must be declared on the class**, not just implemented,

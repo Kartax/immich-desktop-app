@@ -57,9 +57,9 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     })
 
                 case .album:
-                    let detail = try await client.album(id: id.value)
-                    observer.didEnumerate(detail.assets.map {
-                        FileProviderItem(asset: $0, parent: ItemID.album(detail.id))
+                    let assets = try await client.assets(inAlbum: id.value)
+                    observer.didEnumerate(assets.map {
+                        FileProviderItem(asset: $0, parent: ItemID.album(id.value))
                     })
 
                 case .persons:

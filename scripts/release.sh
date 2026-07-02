@@ -14,8 +14,9 @@
 #     (app-specific password from https://appleid.apple.com)
 #
 # Usage:
-#   ./scripts/release.sh              # build + notarize a local .dmg only
-#   ./scripts/release.sh v0.1.0       # ...and publish it as a GitHub Release
+#   ./scripts/release.sh                                    # build + notarize a local .dmg only
+#   ./scripts/release.sh v0.1.0                             # ...and publish it as a GitHub Release
+#   ./scripts/release.sh v0.1.0 "Release description"       # ...with custom release notes
 #
 # Publishing uploads the .dmg to this repo's GitHub Releases (PUBLISH_REPO) via
 # the GitHub CLI. Install + authenticate it once: `brew install gh && gh auth login`.
@@ -32,6 +33,7 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-NOTARY}"
 # This same repo hosts the download page (docs/ via Pages) and release binaries.
 PUBLISH_REPO="${PUBLISH_REPO:-Kartax/immich-desktop-app}"
 VERSION="${1:-}"   # e.g. v0.1.0 — when set, the .dmg is published as a Release
+NOTES="${2:-}"     # optional release description; replaces the default notes text
 
 # Resolve repo root up front (this script lives in scripts/) so all git and build
 # commands run against the code repo regardless of the caller's cwd.
@@ -181,13 +183,22 @@ if [[ -n "$VERSION" ]]; then
   # the tag itself — at the exact built commit (--target). Doing it in one step
   # keeps the "tag only on a successful publish" property (a failed upload never
   # leaves an orphan tag) without a separate git tag/push that would collide.
+  # A description passed as the second argument replaces the default install
+  # blurb; the source-commit line is always appended.
+  if [[ -n "$NOTES" ]]; then
+    RELEASE_NOTES="$NOTES
+
+Built from source commit \`$COMMIT\`."
+  else
+    RELEASE_NOTES="Immich Desktop $VERSION — notarized, macOS 14+. Download \`ImmichDesktop.dmg\`, move it to Applications, then enter your Immich server URL and API key from the menu bar.
+
+Built from source commit \`$COMMIT\`."
+  fi
   gh release create "$VERSION" "$DMG" \
     --repo "$PUBLISH_REPO" \
     --target "$(git rev-parse HEAD)" \
     --title "$VERSION" \
-    --notes "Immich Desktop $VERSION — notarized, macOS 14+. Download \`ImmichDesktop.dmg\`, move it to Applications, then enter your Immich server URL and API key from the menu bar.
-
-Built from source commit \`$COMMIT\`."
+    --notes "$RELEASE_NOTES"
   echo "Published: https://github.com/$PUBLISH_REPO/releases/tag/$VERSION"
 
   # Sync the tag gh just created on the remote into the local clone.
