@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var showPersons  = AppConfig.showPersons
     @State private var showPlaces   = AppConfig.showPlaces
     @State private var groupLargeFolders = AppConfig.groupLargeFolders
+    @State private var restoringGroupingSetting = false
+    @State private var groupingUpdateFailed = false
     @State private var runOnStartup = SMAppService.mainApp.status == .enabled
 
     private enum Result { case ok, failed }
@@ -66,12 +68,14 @@ struct ContentView: View {
                 Toggle("Group large folders by year and month",
                        isOn: $groupLargeFolders)
                     .onChange(of: groupLargeFolders) { _, v in
-                        AppConfig.groupLargeFolders = v
-                        Task {
-                            guard AppConfig.isConfigured else { return }
-                            try? await DomainManager.activate(reset: true)
-                        }
+                        Task { await applyGroupingSetting(v) }
                     }
+                    .disabled(busy)
+                if groupingUpdateFailed {
+                    Text("Finder could not be refreshed. Please try again.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             } header: {
                 Text("Views in Finder")
             }
@@ -88,6 +92,42 @@ struct ContentView: View {
             for: NSApplication.didBecomeActiveNotification)) { _ in
             runOnStartup = SMAppService.mainApp.status == .enabled
         }
+    }
+
+    @MainActor
+    private func applyGroupingSetting(_ enabled: Bool) async {
+        if restoringGroupingSetting {
+            restoringGroupingSetting = false
+            return
+        }
+
+        let previousValue = AppConfig.groupLargeFolders
+        guard previousValue != enabled else { return }
+
+        busy = true
+        result = nil
+        groupingUpdateFailed = false
+        AppConfig.groupLargeFolders = enabled
+
+        guard AppConfig.isConfigured else {
+            busy = false
+            return
+        }
+
+        do {
+            try await DomainManager.activate(reset: true)
+        } catch {
+            fpLog.error(
+                "Grouping setting update failed: \(error.localizedDescription, privacy: .public)"
+            )
+            // Keep the UI and shared configuration consistent with the hierarchy
+            // that Finder still has when rebuilding its backing store fails.
+            AppConfig.groupLargeFolders = previousValue
+            restoringGroupingSetting = true
+            groupLargeFolders = previousValue
+            groupingUpdateFailed = true
+        }
+        busy = false
     }
 
     @MainActor

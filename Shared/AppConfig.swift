@@ -76,7 +76,15 @@ enum AppConfig {
 
     static var groupLargeFolders: Bool {
         get { load().groupLargeFolders ?? true }
-        set { var s = load(); s.groupLargeFolders = newValue; store(s) }
+        set {
+            var s = load()
+            guard (s.groupLargeFolders ?? true) != newValue else { return }
+            s.groupLargeFolders = newValue
+            // The setting changes parent/child identifiers throughout the virtual
+            // tree. Invalidate persisted metadata together with Finder's domain.
+            s.configurationVersion = (s.configurationVersion ?? 0) &+ 1
+            store(s)
+        }
     }
 
     static var isConfigured: Bool {
