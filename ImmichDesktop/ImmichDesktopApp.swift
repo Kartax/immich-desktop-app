@@ -42,12 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             showSettings()
         }
 
-        // Begin polling server reachability and reflect it on the icon.
+        // Begin polling server reachability and checking for newer releases, then
+        // reflect both states on the status item.
         ConnectionMonitor.shared.start()
-        trackConnection()
-
-        // Check for a newer release now and once a day (report-only, no auto-update).
         UpdateChecker.shared.start()
+        trackStatusState()
     }
 
     /// Keep the app alive when the settings window is closed (it's a menu bar app).
@@ -58,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = Self.icon
+        item.button?.imagePosition = .imageLeading
         let menu = NSMenu()
         menu.delegate = self          // rebuilt on open (menuNeedsUpdate)
         item.menu = menu
@@ -65,18 +65,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         updateIconState()
     }
 
-    /// Dim the icon (standard "inactive" look) whenever the server isn't reachable.
+    /// Dim the icon when disconnected and append a small update marker when needed.
     @MainActor private func updateIconState() {
-        statusItem?.button?.appearsDisabled = !ConnectionMonitor.shared.status.isConnected
+        guard let button = statusItem?.button else { return }
+        button.appearsDisabled = !ConnectionMonitor.shared.status.isConnected
+
+        if case .updateAvailable(let latest) = UpdateChecker.shared.state {
+            button.title = "!"
+            button.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize,
+                                            weight: .bold)
+            button.toolTip = "Immich Desktop v\(latest) is available"
+        } else {
+            button.title = ""
+            button.toolTip = nil
+        }
     }
 
-    /// Observe `ConnectionMonitor.status` and re-apply the icon state on every change.
+    /// Observe connection and update state, then re-apply the status item on each change.
     /// Re-arms itself because `withObservationTracking` fires `onChange` only once.
-    @MainActor private func trackConnection() {
+    @MainActor private func trackStatusState() {
         withObservationTracking {
             updateIconState()
         } onChange: { [weak self] in
-            Task { @MainActor in self?.trackConnection() }
+            Task { @MainActor in self?.trackStatusState() }
         }
     }
 
