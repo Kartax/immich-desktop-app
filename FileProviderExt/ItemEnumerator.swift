@@ -4,7 +4,6 @@ import FileProvider
 final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
     private static let fallbackSuggestedPageSize = 200
     private static let maximumPageSize = 1000
-    private static let maximumServerPagesPerEnumeration = 3
 
     private let container: NSFileProviderItemIdentifier
     private let client: ImmichClient
@@ -15,37 +14,31 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
     private struct PageRequest {
         let number: Int
         let size: Int
-        let serverPageCount: Int
     }
 
     private struct PageToken {
         let number: Int
         let size: Int
-        let serverPageCount: Int
 
-        init(number: Int, size: Int, serverPageCount: Int) {
+        init(number: Int, size: Int) {
             self.number = number
             self.size = size
-            self.serverPageCount = serverPageCount
         }
 
         init?(data: Data) {
             guard let value = String(data: data, encoding: .utf8) else { return nil }
             let fields = value.split(separator: ":", omittingEmptySubsequences: false)
-            guard fields.count == 5,
-                  fields[0] == "immich", fields[1] == "2",
+            guard fields.count == 4,
+                  fields[0] == "immich", fields[1] == "3",
                   let number = Int(fields[2]), number >= 2,
-                  let size = Int(fields[3]), (1...ItemEnumerator.maximumPageSize).contains(size),
-                  let serverPageCount = Int(fields[4]),
-                  (1...ItemEnumerator.maximumServerPagesPerEnumeration).contains(serverPageCount)
+                  let size = Int(fields[3]), (1...ItemEnumerator.maximumPageSize).contains(size)
             else { return nil }
             self.number = number
             self.size = size
-            self.serverPageCount = serverPageCount
         }
 
         var fileProviderPage: NSFileProviderPage {
-            let data = Data("immich:2:\(number):\(size):\(serverPageCount)".utf8)
+            let data = Data("immich:3:\(number):\(size)".utf8)
             return NSFileProviderPage(rawValue: data)
         }
     }
@@ -186,18 +179,14 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         let request = try Self.pageRequest(for: page,
                                            suggestedSize: observer.suggestedPageSize)
         try checkCancellation()
-        var pageNumber = request.number
-        for _ in 0..<request.serverPageCount {
-            let result = try await load(pageNumber, request.size)
-            let items = result.assets.map { FileProviderItem(asset: $0, parent: parent) }
-            try report(items, to: observer)
-            fpLog.info("enumerate \(self.container.rawValue, privacy: .public) page \(pageNumber, privacy: .public): \(items.count, privacy: .public) item(s)")
+        let result = try await load(request.number, request.size)
+        let items = result.assets.map { FileProviderItem(asset: $0, parent: parent) }
+        try report(items, to: observer)
+        fpLog.info("enumerate \(self.container.rawValue, privacy: .public) page \(request.number, privacy: .public): \(items.count, privacy: .public) item(s)")
 
-            guard let nextPage = result.nextPage else { return nil }
-            pageNumber = nextPage
+        return result.nextPage.map {
+            PageToken(number: $0, size: request.size).fileProviderPage
         }
-        return PageToken(number: pageNumber, size: request.size,
-                         serverPageCount: request.serverPageCount).fileProviderPage
     }
 
     private func report(_ items: [FileProviderItem],
@@ -239,34 +228,20 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
     private static func pageRequest(for page: NSFileProviderPage,
                                     suggestedSize: Int?) throws -> PageRequest {
         if isInitialPage(page) {
-            // Finder eagerly drains replicated-provider pages and pauses between them.
-            // Stream several server pages without exceeding Apple's 100x suggestion.
-            let systemMaximum = maximumItems(forSuggestedSize: suggestedSize)
-            let size = min(systemMaximum, maximumPageSize)
-            let serverPageCount = max(1, min(maximumServerPagesPerEnumeration,
-                                             systemMaximum / size))
-            return PageRequest(number: 1, size: size, serverPageCount: serverPageCount)
+            return PageRequest(number: 1, size: pageSize(forSuggestedSize: suggestedSize))
         }
 
         guard let token = PageToken(data: page.rawValue) else {
             throw NSFileProviderError(.pageExpired)
         }
-        let systemMaximum = maximumItems(forSuggestedSize: suggestedSize)
-        guard token.size <= systemMaximum else {
-            throw NSFileProviderError(.pageExpired)
-        }
-        let serverPageCount = max(1, min(token.serverPageCount,
-                                         systemMaximum / token.size))
-        return PageRequest(number: token.number, size: token.size,
-                           serverPageCount: serverPageCount)
+        return PageRequest(number: token.number, size: token.size)
     }
 
-    private static func maximumItems(forSuggestedSize suggestedSize: Int?) -> Int {
-        let suggestedSize = max(suggestedSize ?? fallbackSuggestedPageSize, 1)
-        let maximumEnumerationItems = maximumPageSize * maximumServerPagesPerEnumeration
-        return suggestedSize > maximumEnumerationItems / 100
-            ? maximumEnumerationItems
-            : suggestedSize * 100
+    private static func pageSize(forSuggestedSize suggestedSize: Int?) -> Int {
+        guard let suggestedSize, suggestedSize > 0 else {
+            return fallbackSuggestedPageSize
+        }
+        return min(suggestedSize, maximumPageSize)
     }
 
     private static func isInitialPage(_ page: NSFileProviderPage) -> Bool {
