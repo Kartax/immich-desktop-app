@@ -16,6 +16,7 @@ enum AppConfig {
     private struct Stored: Codable {
         var serverURL: String?
         var apiKey: String?
+        var configurationVersion: Int?
         var showTimeline: Bool?   // nil → true (default on, so old config files show all views)
         var showPersons: Bool?
         var showPlaces: Bool?
@@ -77,11 +78,22 @@ enum AppConfig {
         return !(s.serverURL ?? "").isEmpty && !(s.apiKey ?? "").isEmpty
     }
 
+    /// Reads credentials and their cache generation with one file access.
+    static var connection: (serverURL: String, apiKey: String, configurationVersion: Int)? {
+        let stored = load()
+        guard let serverURL = stored.serverURL, !serverURL.isEmpty,
+              let apiKey = stored.apiKey, !apiKey.isEmpty else {
+            return nil
+        }
+        return (serverURL, apiKey, stored.configurationVersion ?? 0)
+    }
+
     /// Set server credentials atomically without touching view-toggle flags.
     static func set(serverURL: String, apiKey: String) {
         var s = load()
         s.serverURL = serverURL
         s.apiKey = apiKey
+        s.configurationVersion = (s.configurationVersion ?? 0) &+ 1
         store(s)
     }
 

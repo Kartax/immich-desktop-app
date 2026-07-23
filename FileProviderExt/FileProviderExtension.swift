@@ -3,7 +3,11 @@ import FileProvider
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
     private static let maximumConcurrentThumbnailRequests = 8
 
+    private let client: ImmichClient?
+    private let metadataCache = AssetMetadataCache.shared
+
     required init(domain: NSFileProviderDomain) {
+        client = ImmichClient()
         super.init()
         fpLog.info("FileProviderExtension init for domain \(domain.identifier.rawValue, privacy: .public)")
     }
@@ -40,19 +44,32 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return progress
         }
 
-        guard let client = ImmichClient() else {
+        guard let client else {
             completionHandler(nil, NSFileProviderError(.notAuthenticated))
             return progress
         }
 
-        Task {
+        let startedAt = Date()
+        let task = Task {
             do {
                 switch id.kind {
                 case .album:
                     let album = try await client.album(id: id.value)
                     completionHandler(FileProviderItem(album: album), nil)
                 case .asset:
-                    let asset = try await client.asset(id: id.value)
+                    let cached = await self.metadataCache.asset(
+                        id: id.value,
+                        parent: id.parent ?? .rootContainer,
+                        configurationVersion: client.configurationVersion)
+                    let asset: ImmichAsset
+                    if let cached {
+                        asset = cached
+                    } else {
+                        asset = try await client.asset(id: id.value)
+                    }
+                    fpLog.debug(
+                        "item(for:) asset cacheHit=\(cached != nil, privacy: .public)"
+                    )
                     completionHandler(
                         FileProviderItem(asset: asset, parent: id.parent ?? .rootContainer), nil)
                 case .person:
@@ -67,10 +84,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     completionHandler(nil, NSFileProviderError(.noSuchItem))
                 }
                 progress.completedUnitCount = 1
+                fpLog.debug(
+                    "item(for:) \(identifier.rawValue, privacy: .public) elapsedMs=\(Date().timeIntervalSince(startedAt) * 1000, format: .fixed(precision: 1), privacy: .public)"
+                )
             } catch {
                 completionHandler(nil, error)
             }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
@@ -83,15 +104,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let progress = Progress(totalUnitCount: 1)
         let id = ItemID(itemIdentifier)
 
-        guard id.kind == .asset, let client = ImmichClient() else {
+        guard id.kind == .asset, let client else {
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return progress
         }
 
-        Task {
+        let task = Task {
             do {
                 let url = try await client.downloadOriginal(id: id.value)
-                let asset = try await client.asset(id: id.value)
+                let cached = await self.metadataCache.asset(
+                    id: id.value,
+                    parent: id.parent ?? .rootContainer,
+                    configurationVersion: client.configurationVersion)
+                let asset: ImmichAsset
+                if let cached {
+                    asset = cached
+                } else {
+                    asset = try await client.asset(id: id.value)
+                }
                 completionHandler(
                     url, FileProviderItem(asset: asset, parent: id.parent ?? .rootContainer), nil)
                 progress.completedUnitCount = 1
@@ -99,6 +129,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                 completionHandler(nil, nil, error)
             }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
@@ -110,10 +141,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                          completionHandler: @escaping (Error?) -> Void) -> Progress {
         fpLog.info("fetchThumbnails: \(itemIdentifiers.count, privacy: .public) item(s)")
         let progress = Progress(totalUnitCount: Int64(itemIdentifiers.count))
-        guard let client = ImmichClient() else {
+        guard let client else {
             completionHandler(NSFileProviderError(.notAuthenticated))
             return progress
         }
+        let startedAt = Date()
         let task = Task {
             var startIndex = 0
             while startIndex < itemIdentifiers.count, !Task.isCancelled {
@@ -155,6 +187,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             } else {
                 completionHandler(nil)
             }
+            fpLog.info(
+                "fetchThumbnails: completed \(progress.completedUnitCount, privacy: .public)/\(progress.totalUnitCount, privacy: .public) in \(Date().timeIntervalSince(startedAt) * 1000, format: .fixed(precision: 1), privacy: .public) ms"
+            )
         }
         progress.cancellationHandler = { task.cancel() }
         return progress
@@ -165,11 +200,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier,
                     request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
         fpLog.info("enumerator(for: \(containerItemIdentifier.rawValue, privacy: .public))")
-        guard let client = ImmichClient() else {
+        guard let client else {
             fpLog.error("enumerator: notAuthenticated")
             throw NSFileProviderError(.notAuthenticated)
         }
-        return ItemEnumerator(container: containerItemIdentifier, client: client)
+        return ItemEnumerator(container: containerItemIdentifier,
+                              client: client, cache: metadataCache)
     }
 
     // MARK: - Write operations (unsupported, read-only)

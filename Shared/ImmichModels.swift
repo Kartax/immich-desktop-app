@@ -6,7 +6,7 @@ struct ImmichAlbum: Codable, Identifiable {
     let assetCount: Int?
 }
 
-struct ImmichExif: Codable {
+struct ImmichExif: Codable, Equatable {
     let fileSizeInByte: Int?
     let city: String?
     let state: String?
@@ -26,7 +26,7 @@ struct ImmichPeopleResponse: Codable {
     let visible: Int?
 }
 
-struct ImmichAsset: Codable, Identifiable {
+struct ImmichAsset: Codable, Identifiable, Equatable {
     let id: String
     let type: String              // IMAGE | VIDEO | AUDIO | OTHER
     let originalFileName: String
@@ -46,6 +46,7 @@ struct ImmichSearchResponse: Codable {
     struct Assets: Codable {
         let items: [ImmichAsset]
         let nextPage: String?
+        let total: Int?
     }
     let assets: Assets
 }

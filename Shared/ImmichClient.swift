@@ -8,30 +8,33 @@ struct ImmichClient {
     struct AssetPage {
         let assets: [ImmichAsset]
         let nextPage: Int?
+        let total: Int?
     }
 
     let baseURL: URL      // ends with .../api
     let apiKey: String
+    let configurationVersion: Int
 
-    init?(serverURL: String, apiKey: String) {
+    init?(serverURL: String, apiKey: String, configurationVersion: Int = 0) {
         var s = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while s.hasSuffix("/") { s.removeLast() }
         if !s.hasSuffix("/api") { s += "/api" }
         guard let url = URL(string: s) else { return nil }
         self.baseURL = url
         self.apiKey = apiKey
+        self.configurationVersion = configurationVersion
     }
 
     /// Initializes from the shared App Group configuration.
     init?() {
-        let s = AppConfig.serverURL
-        let k = AppConfig.apiKey
-        fpLog.info("ImmichClient(): serverURL=\(s ?? "nil", privacy: .public), hasKey=\(k?.isEmpty == false, privacy: .public)")
-        guard let s, !s.isEmpty, let k, !k.isEmpty else {
+        guard let connection = AppConfig.connection else {
+            fpLog.info("ImmichClient(): serverURL=nil, hasKey=false")
             fpLog.error("ImmichClient(): configuration missing – notAuthenticated")
             return nil
         }
-        self.init(serverURL: s, apiKey: k)
+        fpLog.info("ImmichClient(): serverURL=\(connection.serverURL, privacy: .public), hasKey=true")
+        self.init(serverURL: connection.serverURL, apiKey: connection.apiKey,
+                  configurationVersion: connection.configurationVersion)
     }
 
     private func request(_ path: String) -> URLRequest {
@@ -210,12 +213,18 @@ struct ImmichClient {
         body["page"] = page
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        let startedAt = Date()
         let (data, response) = try await URLSession.shared.data(for: req)
+        let responseAt = Date()
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
 
         let resp = try JSONDecoder().decode(ImmichSearchResponse.self, from: data)
+        let completedAt = Date()
+        fpLog.debug(
+            "searchPage page=\(page, privacy: .public) size=\(size, privacy: .public) bytes=\(data.count, privacy: .public) networkMs=\(responseAt.timeIntervalSince(startedAt) * 1000, format: .fixed(precision: 1), privacy: .public) decodeMs=\(completedAt.timeIntervalSince(responseAt) * 1000, format: .fixed(precision: 1), privacy: .public)"
+        )
         let nextPage: Int?
         if let rawNextPage = resp.assets.nextPage {
             guard let parsedNextPage = Int(rawNextPage), parsedNextPage > page else {
@@ -225,7 +234,8 @@ struct ImmichClient {
         } else {
             nextPage = nil
         }
-        return AssetPage(assets: resp.assets.items, nextPage: nextPage)
+        return AssetPage(assets: resp.assets.items, nextPage: nextPage,
+                         total: resp.assets.total)
     }
 
     /// Half-open interval [month start, next month start) as ISO strings.

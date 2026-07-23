@@ -38,6 +38,10 @@
         <string>group.org.kartax.ImmichDesktop</string>
         <key>NSExtensionFileProviderSupportsEnumeration</key>
         <true/>
+        <!-- All write operations are either rejected immediately or completed before
+             becoming visible, so fileproviderd does not need race-resolution lookups. -->
+        <key>NSExtensionFileProviderAppliesChangesAtomically</key>
+        <true/>
     </dict>
 </dict>
 </plist>
