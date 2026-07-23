@@ -36,6 +36,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         case .city:     staticFolder = id.cityComponents.map {
                             FileProviderItem.cityFolder(country: $0.country, city: $0.city)
                         }
+        case .groupedYear:
+            staticFolder = id.groupedBaseContainer.map {
+                FileProviderItem.groupedYearFolder(base: $0, year: id.value)
+            }
+        case .groupedMonth:
+            staticFolder = id.groupedBaseContainer.map {
+                FileProviderItem.groupedMonthFolder(base: $0, month: id.value)
+            }
         case .album, .asset, .person: staticFolder = nil
         }
         if let folder = staticFolder {
@@ -57,9 +65,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     let album = try await client.album(id: id.value)
                     completionHandler(FileProviderItem(album: album), nil)
                 case .asset:
+                    let itemParent = id.parent ?? .rootContainer
+                    let cacheParent =
+                        ItemID(itemParent).groupedBaseContainer ?? itemParent
                     let cached = await self.metadataCache.asset(
                         id: id.value,
-                        parent: id.parent ?? .rootContainer,
+                        parent: cacheParent,
                         configurationVersion: client.configurationVersion)
                     let asset: ImmichAsset
                     if let cached {
@@ -71,7 +82,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                         "item(for:) asset cacheHit=\(cached != nil, privacy: .public)"
                     )
                     completionHandler(
-                        FileProviderItem(asset: asset, parent: id.parent ?? .rootContainer), nil)
+                        FileProviderItem(asset: asset, parent: itemParent), nil)
                 case .person:
                     let people = try await client.people()
                     if let match = people.first(where: { $0.id == id.value }) {
@@ -112,9 +123,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         let task = Task {
             do {
                 let url = try await client.downloadOriginal(id: id.value)
+                let itemParent = id.parent ?? .rootContainer
+                let cacheParent =
+                    ItemID(itemParent).groupedBaseContainer ?? itemParent
                 let cached = await self.metadataCache.asset(
                     id: id.value,
-                    parent: id.parent ?? .rootContainer,
+                    parent: cacheParent,
                     configurationVersion: client.configurationVersion)
                 let asset: ImmichAsset
                 if let cached {
@@ -123,7 +137,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     asset = try await client.asset(id: id.value)
                 }
                 completionHandler(
-                    url, FileProviderItem(asset: asset, parent: id.parent ?? .rootContainer), nil)
+                    url, FileProviderItem(asset: asset, parent: itemParent), nil)
                 progress.completedUnitCount = 1
             } catch {
                 completionHandler(nil, nil, error)

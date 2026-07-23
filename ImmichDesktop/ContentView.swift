@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var showAlbums   = AppConfig.showAlbums
     @State private var showPersons  = AppConfig.showPersons
     @State private var showPlaces   = AppConfig.showPlaces
+    @State private var groupLargeFolders = AppConfig.groupLargeFolders
     @State private var runOnStartup = SMAppService.mainApp.status == .enabled
 
     private enum Result { case ok, failed }
@@ -61,6 +62,15 @@ struct ContentView: View {
                     .onChange(of: showPlaces) { _, v in
                         AppConfig.showPlaces = v
                         Task { await DomainManager.signalRoot() }
+                    }
+                Toggle("Group large folders by year and month",
+                       isOn: $groupLargeFolders)
+                    .onChange(of: groupLargeFolders) { _, v in
+                        AppConfig.groupLargeFolders = v
+                        Task {
+                            guard AppConfig.isConfigured else { return }
+                            try? await DomainManager.activate(reset: true)
+                        }
                     }
             } header: {
                 Text("Views in Finder")

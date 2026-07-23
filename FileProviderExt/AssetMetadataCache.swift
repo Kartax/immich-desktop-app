@@ -172,7 +172,8 @@ actor AssetMetadataCache {
         _ assets: [ImmichAsset],
         for container: NSFileProviderItemIdentifier,
         generation: String,
-        configurationVersion: Int
+        configurationVersion: Int,
+        emitChanges: Bool = true
     ) {
         let oldSnapshot = loadSnapshot(
             for: container.rawValue, configurationVersion: configurationVersion)
@@ -184,7 +185,9 @@ actor AssetMetadataCache {
             createdAt: Date(),
             assets: assets)
 
-        recordChanges(from: oldSnapshot, to: snapshot)
+        if emitChanges {
+            recordChanges(from: oldSnapshot, to: snapshot)
+        }
         snapshots[container.rawValue] = snapshot
         snapshotIndexes[container.rawValue] = index(assets)
         write(snapshot, to: snapshotURL(containerRawValue: container.rawValue))

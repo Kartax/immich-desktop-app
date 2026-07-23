@@ -21,6 +21,7 @@ enum AppConfig {
         var showPersons: Bool?
         var showPlaces: Bool?
         var showAlbums: Bool?
+        var groupLargeFolders: Bool? // nil → true for existing installations
     }
 
     private static var fileURL: URL? {
@@ -71,6 +72,11 @@ enum AppConfig {
     static var showAlbums: Bool {
         get { load().showAlbums ?? true }
         set { var s = load(); s.showAlbums = newValue; store(s) }
+    }
+
+    static var groupLargeFolders: Bool {
+        get { load().groupLargeFolders ?? true }
+        set { var s = load(); s.groupLargeFolders = newValue; store(s) }
     }
 
     static var isConfigured: Bool {

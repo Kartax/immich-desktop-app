@@ -13,11 +13,16 @@ import FileProvider
 ///   Places root                 -> "places"
 ///   Country                     -> "place|<countryName>"
 ///   City                        -> "place|<countryName>|<cityName>"
+///   Grouped year                -> "group-year|<baseRaw>|<year>"
+///   Grouped month               -> "group-month|<baseRaw>|<YYYY-MM>"
 ///   Asset                       -> "asset|<parentRaw>|<assetId>"  (parent identifier embedded
 ///                                   so the same asset can exist under both an album and a month;
 ///                                   parentRaw may itself contain "|", assetId never does)
 struct ItemID {
-    enum Kind { case root, timeline, year, month, album, asset, persons, person, places, country, city }
+    enum Kind {
+        case root, timeline, year, month, album, asset, persons, person,
+             places, country, city, groupedYear, groupedMonth
+    }
 
     let kind: Kind
     let value: String                              // year, "YYYY-MM", albumId or assetId
@@ -43,6 +48,25 @@ struct ItemID {
                     : NSFileProviderItemIdentifier(rawValue: parentRaw)
                 return
             }
+        }
+
+        // Group identifiers also embed a parent containing "|" and are therefore
+        // split from the right, just like asset identifiers.
+        if let (base, period) = Self.groupedComponents(
+            raw, prefix: "group-year|"
+        ) {
+            kind = .groupedYear
+            value = period
+            parent = base
+            return
+        }
+        if let (base, period) = Self.groupedComponents(
+            raw, prefix: "group-month|"
+        ) {
+            kind = .groupedMonth
+            value = period
+            parent = ItemID.groupedYear(base: base, year: Self.year(for: period))
+            return
         }
 
         let parts = raw.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
@@ -76,6 +100,19 @@ struct ItemID {
         return (String(value[..<sep]), String(value[value.index(after: sep)...]))
     }
 
+    /// Original album/person/city container behind an automatic date group.
+    var groupedBaseContainer: NSFileProviderItemIdentifier? {
+        switch kind {
+        case .groupedYear:
+            return parent
+        case .groupedMonth:
+            guard let parent else { return nil }
+            return ItemID(parent).parent
+        default:
+            return nil
+        }
+    }
+
     static let timeline = NSFileProviderItemIdentifier(rawValue: "timeline")
     static let persons  = NSFileProviderItemIdentifier(rawValue: "persons")
     static let places   = NSFileProviderItemIdentifier(rawValue: "places")
@@ -104,9 +141,42 @@ struct ItemID {
         NSFileProviderItemIdentifier(rawValue: "place|\(country)|\(city)")
     }
 
+    static func groupedYear(
+        base: NSFileProviderItemIdentifier,
+        year: String
+    ) -> NSFileProviderItemIdentifier {
+        NSFileProviderItemIdentifier(rawValue: "group-year|\(base.rawValue)|\(year)")
+    }
+
+    static func groupedMonth(
+        base: NSFileProviderItemIdentifier,
+        month: String
+    ) -> NSFileProviderItemIdentifier {
+        NSFileProviderItemIdentifier(rawValue: "group-month|\(base.rawValue)|\(month)")
+    }
+
     static func asset(_ assetId: String,
                       parent: NSFileProviderItemIdentifier) -> NSFileProviderItemIdentifier {
         let parentRaw = (parent == .rootContainer) ? "root" : parent.rawValue
         return NSFileProviderItemIdentifier(rawValue: "asset|\(parentRaw)|\(assetId)")
+    }
+
+    private static func groupedComponents(
+        _ raw: String,
+        prefix: String
+    ) -> (base: NSFileProviderItemIdentifier, period: String)? {
+        guard raw.hasPrefix(prefix) else { return nil }
+        let rest = String(raw.dropFirst(prefix.count))
+        guard let separator = rest.range(of: "|", options: .backwards) else {
+            return nil
+        }
+        let baseRaw = String(rest[..<separator.lowerBound])
+        let period = String(rest[separator.upperBound...])
+        guard !baseRaw.isEmpty, !period.isEmpty else { return nil }
+        return (NSFileProviderItemIdentifier(rawValue: baseRaw), period)
+    }
+
+    private static func year(for month: String) -> String {
+        month == "unknown" ? "unknown" : String(month.prefix(4))
     }
 }

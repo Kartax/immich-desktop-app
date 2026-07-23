@@ -77,6 +77,35 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
                          filename: sanitize(city), contentType: .folder, isFolder: true, size: nil)
     }
 
+    static func groupedYearFolder(
+        base: NSFileProviderItemIdentifier,
+        year: String
+    ) -> FileProviderItem {
+        FileProviderItem(
+            identifier: ItemID.groupedYear(base: base, year: year),
+            parent: base,
+            filename: year == "unknown" ? "Unknown Date" : year,
+            contentType: .folder,
+            isFolder: true,
+            size: nil)
+    }
+
+    static func groupedMonthFolder(
+        base: NSFileProviderItemIdentifier,
+        month: String
+    ) -> FileProviderItem {
+        let year = month == "unknown" ? "unknown" : String(month.prefix(4))
+        return FileProviderItem(
+            identifier: ItemID.groupedMonth(base: base, month: month),
+            parent: ItemID.groupedYear(base: base, year: year),
+            filename: month == "unknown"
+                ? "Unknown Date"
+                : TimelineFormat.monthDisplay(month),
+            contentType: .folder,
+            isFolder: true,
+            size: nil)
+    }
+
     // MARK: File (asset)
 
     convenience init(asset: ImmichAsset, parent: NSFileProviderItemIdentifier) {
