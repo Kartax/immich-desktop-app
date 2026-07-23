@@ -5,6 +5,11 @@ let fpLog = Logger(subsystem: "org.kartax.ImmichDesktop", category: "fileprovide
 
 /// Lightweight client for the Immich REST API (read-only).
 struct ImmichClient {
+    struct AssetPage {
+        let assets: [ImmichAsset]
+        let nextPage: Int?
+    }
+
     let baseURL: URL      // ends with .../api
     let apiKey: String
 
@@ -60,14 +65,14 @@ struct ImmichClient {
         return try JSONDecoder().decode(ImmichAlbum.self, from: data)
     }
 
-    /// All assets of an album via metadata search (the v3 replacement for the
+    /// One page of album assets via metadata search (the v3 replacement for the
     /// removed `assets` field of GET /albums/{id}). No visibility filter: albums
     /// include archived assets, matching the old endpoint's behavior.
-    func assets(inAlbum albumId: String) async throws -> [ImmichAsset] {
-        return try await pagedSearch([
+    func assets(inAlbum albumId: String, page: Int, size: Int) async throws -> AssetPage {
+        return try await searchPage([
             "albumIds": [albumId],
             "withExif": true,
-        ])
+        ], page: page, size: size)
     }
 
     func asset(id: String) async throws -> ImmichAsset {
@@ -115,42 +120,31 @@ struct ImmichClient {
         return try JSONDecoder().decode([ImmichTimeBucket].self, from: data)
     }
 
-    /// One page of the global "All Photos" timeline, newest first. Unlike `pagedSearch`
-    /// this fetches a SINGLE page — the gallery pages in more while scrolling instead
-    /// of materializing the whole library. `takenBefore` anchors the timeline at a
-    /// date (gallery "jump to month") without loading any intervening pages.
+    /// One page of the global "All Photos" timeline, newest first. The gallery pages
+    /// in more while scrolling instead of materializing the whole library.
+    /// `takenBefore` anchors the timeline at a date (gallery "jump to month") without
+    /// loading any intervening pages.
     func assetsPage(page: Int, size: Int = 200,
                     takenBefore: String? = nil) async throws -> (assets: [ImmichAsset], nextPage: Int?) {
-        var req = request("search/metadata")
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = [
-            "page": page,
-            "size": size,
-            "order": "desc",
             // Since v3 the search defaults to any visibility (archived, hidden, …);
             // pin it to keep the timeline showing only timeline-visible assets.
             "visibility": "timeline",
         ]
         if let takenBefore { body["takenBefore"] = takenBefore }
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        let resp = try JSONDecoder().decode(ImmichSearchResponse.self, from: data)
-        return (resp.assets.items, resp.assets.nextPage.flatMap(Int.init))
+        let result = try await searchPage(body, page: page, size: size)
+        return (result.assets, result.nextPage)
     }
 
-    /// All assets of a month ("YYYY-MM") via paginated metadata search.
-    func assets(inMonth month: String) async throws -> [ImmichAsset] {
+    /// One page of assets from a month ("YYYY-MM") via metadata search.
+    func assets(inMonth month: String, page: Int, size: Int) async throws -> AssetPage {
         let (after, before) = ImmichClient.monthRange(month)
-        return try await pagedSearch([
+        return try await searchPage([
             "takenAfter": after,
             "takenBefore": before,
             "withExif": true,   // provides exifInfo.fileSizeInByte – otherwise size 0, no download
             "visibility": "timeline",   // v3 defaults to any visibility; keep archived/hidden out
-        ])
+        ], page: page, size: size)
     }
 
     // MARK: - Persons
@@ -162,13 +156,13 @@ struct ImmichClient {
         return resp.people.filter { ($0.isHidden ?? false) == false && !($0.name ?? "").isEmpty }
     }
 
-    /// Assets for a person via POST /api/search/metadata with personIds filter.
-    func assets(forPerson personId: String) async throws -> [ImmichAsset] {
-        return try await pagedSearch([
+    /// One page of assets for a person via metadata search with a personIds filter.
+    func assets(forPerson personId: String, page: Int, size: Int) async throws -> AssetPage {
+        return try await searchPage([
             "personIds": [personId],
             "withExif": true,
             "visibility": "timeline",   // v3 defaults to any visibility; keep archived/hidden out
-        ])
+        ], page: page, size: size)
     }
 
     // MARK: - Places
@@ -188,36 +182,50 @@ struct ImmichClient {
         return try JSONDecoder().decode([String].self, from: data).sorted()
     }
 
-    /// POST /api/search/metadata filtered by city + country.
-    func assets(inCity city: String, country: String) async throws -> [ImmichAsset] {
-        return try await pagedSearch([
+    /// One page from POST /api/search/metadata filtered by city + country.
+    func assets(inCity city: String, country: String,
+                page: Int, size: Int) async throws -> AssetPage {
+        return try await searchPage([
             "city": city,
             "country": country,
             "withExif": true,
             "visibility": "timeline",   // v3 defaults to any visibility; keep archived/hidden out
-        ])
+        ], page: page, size: size)
     }
 
     // MARK: - Private helpers
 
-    private func pagedSearch(_ baseBody: [String: Any]) async throws -> [ImmichAsset] {
-        var out: [ImmichAsset] = []
-        var page = 1
-        while true {
-            var req = request("search/metadata")
-            req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            var body = baseBody
-            body["size"] = 1000
-            body["page"] = page
-            req.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (data, _) = try await URLSession.shared.data(for: req)
-            let resp = try JSONDecoder().decode(ImmichSearchResponse.self, from: data)
-            out.append(contentsOf: resp.assets.items)
-            guard let next = resp.assets.nextPage, let p = Int(next) else { break }
-            page = p
+    private func searchPage(_ baseBody: [String: Any],
+                            page: Int, size: Int) async throws -> AssetPage {
+        guard page >= 1, (1...1000).contains(size) else {
+            throw URLError(.badURL)
         }
-        return out
+
+        var req = request("search/metadata")
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body = baseBody
+        body["order"] = "desc"
+        body["size"] = size
+        body["page"] = page
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+
+        let resp = try JSONDecoder().decode(ImmichSearchResponse.self, from: data)
+        let nextPage: Int?
+        if let rawNextPage = resp.assets.nextPage {
+            guard let parsedNextPage = Int(rawNextPage), parsedNextPage > page else {
+                throw URLError(.badServerResponse)
+            }
+            nextPage = parsedNextPage
+        } else {
+            nextPage = nil
+        }
+        return AssetPage(assets: resp.assets.items, nextPage: nextPage)
     }
 
     /// Half-open interval [month start, next month start) as ISO strings.

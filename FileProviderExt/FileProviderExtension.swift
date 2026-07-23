@@ -1,6 +1,7 @@
 import FileProvider
 
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
+    private static let maximumConcurrentThumbnailRequests = 8
 
     required init(domain: NSFileProviderDomain) {
         super.init()
@@ -113,27 +114,49 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             completionHandler(NSFileProviderError(.notAuthenticated))
             return progress
         }
-        Task {
-            await withTaskGroup(of: Void.self) { group in
-                for identifier in itemIdentifiers {
-                    group.addTask {
-                        let id = ItemID(identifier)
-                        guard id.kind == .asset else {
-                            perThumbnailCompletionHandler(identifier, nil, nil)
-                            return
-                        }
-                        do {
-                            let data = try await client.thumbnail(id: id.value)
-                            perThumbnailCompletionHandler(identifier, data, nil)
-                        } catch {
-                            perThumbnailCompletionHandler(identifier, nil, error)
+        let task = Task {
+            var startIndex = 0
+            while startIndex < itemIdentifiers.count, !Task.isCancelled {
+                let endIndex = min(startIndex + Self.maximumConcurrentThumbnailRequests,
+                                   itemIdentifiers.count)
+                let batch = itemIdentifiers[startIndex..<endIndex]
+                await withTaskGroup(of: Void.self) { group in
+                    for identifier in batch {
+                        group.addTask {
+                            let id = ItemID(identifier)
+                            guard id.kind == .asset else {
+                                if !Task.isCancelled {
+                                    perThumbnailCompletionHandler(identifier, nil, nil)
+                                }
+                                return
+                            }
+                            do {
+                                let data = try await client.thumbnail(id: id.value)
+                                if !Task.isCancelled {
+                                    perThumbnailCompletionHandler(identifier, data, nil)
+                                }
+                            } catch {
+                                if !Task.isCancelled {
+                                    perThumbnailCompletionHandler(identifier, nil, error)
+                                }
+                            }
                         }
                     }
                 }
+                if !Task.isCancelled {
+                    progress.completedUnitCount += Int64(batch.count)
+                }
+                startIndex = endIndex
             }
-            progress.completedUnitCount = Int64(itemIdentifiers.count)
-            completionHandler(nil)
+
+            if Task.isCancelled {
+                completionHandler(NSError(domain: NSCocoaErrorDomain,
+                                          code: NSUserCancelledError))
+            } else {
+                completionHandler(nil)
+            }
         }
+        progress.cancellationHandler = { task.cancel() }
         return progress
     }
 
