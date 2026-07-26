@@ -7,7 +7,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
     private static let maximumLocallySortedItems = 10_000
     private static let maximumSpeculativeNamePages = 5
     private static let freshSnapshotLifetime: TimeInterval = 5 * 60
-    private static let automaticGroupingThreshold = 750
+    private static let groupingThreshold = 500
 
     private let container: NSFileProviderItemIdentifier
     private let client: ImmichClient
@@ -140,7 +140,8 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
                 case .album:
                     nextPage = try await self.enumeratePotentiallyGroupedAssets(
-                        for: observer, startingAt: page, parent: ItemID.album(id.value)
+                        for: observer, startingAt: page, parent: ItemID.album(id.value),
+                        groupingMode: AppConfig.albumGroupingMode
                     ) { number, size in
                         try await self.client.assets(
                             inAlbum: id.value, page: number, size: size)
@@ -154,7 +155,8 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
                 case .person:
                     nextPage = try await self.enumeratePotentiallyGroupedAssets(
-                        for: observer, startingAt: page, parent: ItemID.person(id.value)
+                        for: observer, startingAt: page, parent: ItemID.person(id.value),
+                        groupingMode: AppConfig.personGroupingMode
                     ) { number, size in
                         try await self.client.assets(
                             forPerson: id.value, page: number, size: size)
@@ -175,7 +177,8 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     if let (country, city) = id.cityComponents {
                         let parent = ItemID.city(country: country, city: city)
                         nextPage = try await self.enumeratePotentiallyGroupedAssets(
-                            for: observer, startingAt: page, parent: parent
+                            for: observer, startingAt: page, parent: parent,
+                            groupingMode: AppConfig.placeGroupingMode
                         ) { number, size in
                             try await self.client.assets(
                                 inCity: city, country: country,
@@ -187,8 +190,8 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     guard let base = id.groupedBaseContainer else {
                         throw NSFileProviderError(.noSuchItem)
                     }
-                    try await self.enumerateGroupedYear(
-                        id.value, base: base, to: observer)
+                    nextPage = try await self.enumerateGroupedYear(
+                        id.value, base: base, for: observer, startingAt: page)
 
                 case .groupedMonth:
                     guard let base = id.groupedBaseContainer else {
@@ -279,9 +282,10 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         for observer: NSFileProviderEnumerationObserver,
         startingAt page: NSFileProviderPage,
         parent: NSFileProviderItemIdentifier,
+        groupingMode: AppConfig.FolderGroupingMode,
         load: (Int, Int) async throws -> ImmichClient.AssetPage
     ) async throws -> NSFileProviderPage? {
-        guard AppConfig.groupLargeFolders, Self.isInitialPage(page) else {
+        guard groupingMode != .never, Self.isInitialPage(page) else {
             return try await enumerateAssets(
                 for: observer, startingAt: page, parent: parent, load: load)
         }
@@ -289,7 +293,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         let sort = try Self.requestedSort(for: page)
         let size = Self.pageSize(forSuggestedSize: observer.suggestedPageSize)
         fpLog.info(
-            "enumerate \(self.container.rawValue, privacy: .public): initial sort=\(sort.rawValue, privacy: .public), suggested=\(observer.suggestedPageSize ?? 0, privacy: .public), selected=\(size, privacy: .public), automaticGrouping=true"
+            "enumerate \(self.container.rawValue, privacy: .public): initial sort=\(sort.rawValue, privacy: .public), suggested=\(observer.suggestedPageSize ?? 0, privacy: .public), selected=\(size, privacy: .public), groupingMode=\(groupingMode.rawValue, privacy: .public)"
         )
 
         let snapshot: AssetMetadataCache.CachedSnapshot
@@ -305,8 +309,8 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         } else {
             let generation = UUID().uuidString
             let result = try await fetchCompleteAssets(load: load)
-            let shouldGroup =
-                result.assets.count > Self.automaticGroupingThreshold
+            let shouldGroup = Self.shouldGroup(
+                assetCount: result.assets.count, mode: groupingMode)
             await cache.publish(
                 result.assets,
                 for: parent,
@@ -322,7 +326,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             )
         }
 
-        guard snapshot.assets.count > Self.automaticGroupingThreshold else {
+        guard Self.shouldGroup(assetCount: snapshot.assets.count, mode: groupingMode) else {
             return try reportCached(
                 snapshot, offset: 0, size: size, sort: sort, to: observer)
         }
@@ -335,7 +339,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             },
             to: observer)
         fpLog.info(
-            "enumerate \(self.container.rawValue, privacy: .public): grouped \(snapshot.assets.count, privacy: .public) assets into \(years.count, privacy: .public) year folder(s), threshold=\(Self.automaticGroupingThreshold, privacy: .public)"
+            "enumerate \(self.container.rawValue, privacy: .public): grouped \(snapshot.assets.count, privacy: .public) assets into \(years.count, privacy: .public) year folder(s), mode=\(groupingMode.rawValue, privacy: .public)"
         )
         return nil
     }
@@ -343,8 +347,18 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
     private func enumerateGroupedYear(
         _ year: String,
         base: NSFileProviderItemIdentifier,
-        to observer: NSFileProviderEnumerationObserver
-    ) async throws {
+        for observer: NSFileProviderEnumerationObserver,
+        startingAt page: NSFileProviderPage
+    ) async throws -> NSFileProviderPage? {
+        if year == "unknown" {
+            return try await enumerateGroupedAssets(
+                base: base, for: observer, startingAt: page
+            ) { Self.yearKey(for: $0) == year }
+        }
+        guard Self.isInitialPage(page) else {
+            throw NSFileProviderError(.pageExpired)
+        }
+
         let snapshot = try await groupedBaseSnapshot(for: base)
         let months = Self.orderedPeriods(Set(
             snapshot.assets.lazy
@@ -359,6 +373,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         fpLog.info(
             "enumerate \(self.container.rawValue, privacy: .public): \(months.count, privacy: .public) month folder(s)"
         )
+        return nil
     }
 
     private func enumerateGroupedMonth(
@@ -366,6 +381,17 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         base: NSFileProviderItemIdentifier,
         for observer: NSFileProviderEnumerationObserver,
         startingAt page: NSFileProviderPage
+    ) async throws -> NSFileProviderPage? {
+        try await enumerateGroupedAssets(
+            base: base, for: observer, startingAt: page
+        ) { Self.monthKey(for: $0) == month }
+    }
+
+    private func enumerateGroupedAssets(
+        base: NSFileProviderItemIdentifier,
+        for observer: NSFileProviderEnumerationObserver,
+        startingAt page: NSFileProviderPage,
+        matching predicate: (ImmichAsset) -> Bool
     ) async throws -> NSFileProviderPage? {
         let snapshot: AssetMetadataCache.CachedSnapshot
         let offset: Int
@@ -378,7 +404,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             size = Self.pageSize(forSuggestedSize: observer.suggestedPageSize)
             sort = try Self.requestedSort(for: page)
             fpLog.info(
-                "enumerate \(self.container.rawValue, privacy: .public): initial grouped month sort=\(sort.rawValue, privacy: .public), selected=\(size, privacy: .public)"
+                "enumerate \(self.container.rawValue, privacy: .public): initial grouped folder sort=\(sort.rawValue, privacy: .public), selected=\(size, privacy: .public)"
             )
         } else {
             guard let token = PageToken(data: page.rawValue),
@@ -396,15 +422,12 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             sort = token.request.sort
         }
 
-        let filtered = snapshot.assets.filter {
-            Self.monthKey(for: $0) == month
-        }
-        let monthSnapshot = AssetMetadataCache.CachedSnapshot(
+        let filteredSnapshot = AssetMetadataCache.CachedSnapshot(
             generation: snapshot.generation,
             createdAt: snapshot.createdAt,
-            assets: filtered)
+            assets: snapshot.assets.filter(predicate))
         return try reportCached(
-            monthSnapshot, offset: offset, size: size, sort: sort, to: observer)
+            filteredSnapshot, offset: offset, size: size, sort: sort, to: observer)
     }
 
     private func groupedBaseSnapshot(
@@ -770,6 +793,20 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         }
     }
 
+    private static func shouldGroup(
+        assetCount: Int,
+        mode: AppConfig.FolderGroupingMode
+    ) -> Bool {
+        switch mode {
+        case .never:
+            return false
+        case .atLeast500:
+            return assetCount >= groupingThreshold
+        case .always:
+            return assetCount > 0
+        }
+    }
+
     private static func isInitialPage(_ page: NSFileProviderPage) -> Bool {
         page.rawValue == (NSFileProviderPage.initialPageSortedByName as Data)
             || page.rawValue == (NSFileProviderPage.initialPageSortedByDate as Data)
@@ -777,7 +814,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
     private static func supportsPaging(_ kind: ItemID.Kind) -> Bool {
         switch kind {
-        case .month, .album, .person, .city, .groupedMonth:
+        case .month, .album, .person, .city, .groupedYear, .groupedMonth:
             return true
         default:
             return false

@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var galleryWindow: NSWindow?
+    private var domainActivationTask: Task<Void, Never>?
 
     // Menu bar icon — same SF Symbol as the Finder sidebar (FileProviderExt Info.plist
     // CFBundleSymbolName), so menu bar and Finder match. A template image so the system
@@ -36,7 +37,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         // Re-mount Immich in Finder automatically if it has been configured before,
         // so launching the app brings the integration back without re-activating.
         if AppConfig.isConfigured {
-            Task { try? await DomainManager.activate(reset: false) }
+            let migratedGroupingModes = AppConfig.migrateGroupingModesIfNeeded()
+            domainActivationTask = Task {
+                do {
+                    try await DomainManager.activate(reset: migratedGroupingModes)
+                    if migratedGroupingModes {
+                        AppConfig.completeGroupingModeMigration()
+                    }
+                } catch {
+                    fpLog.error(
+                        "Domain activation failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
         } else {
             // Nothing set up yet — bring the settings window up so the app is usable.
             showSettings()
@@ -108,6 +121,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                                    keyEquivalent: "")
         gallery.target = self
         gallery.image = Self.icon    // same symbol as tray + Finder sidebar
+        let finder = menu.addItem(withTitle: "Open Finder", action: #selector(openFinder),
+                                  keyEquivalent: "")
+        finder.target = self
+        finder.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Open Finder")
+        finder.isEnabled = AppConfig.isConfigured
         menu.addItem(withTitle: "Open Settings…", action: #selector(openSettings), keyEquivalent: "")
             .target = self
         menu.addItem(.separator())
@@ -133,9 +151,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     // MARK: - Menu actions
 
-    @objc private func openSettings() { showSettings() }
+    @objc private func openSettings() {
+        let activationTask = domainActivationTask
+        Task {
+            await activationTask?.value
+            showSettings()
+        }
+    }
 
     @objc private func openGallery() { showGallery() }
+
+    @objc private func openFinder() {
+        let activationTask = domainActivationTask
+        Task {
+            await activationTask?.value
+            do {
+                let rootURL = try await DomainManager.userVisibleRootURL()
+                NSWorkspace.shared.activateFileViewerSelecting([rootURL])
+            } catch {
+                fpLog.error(
+                    "Opening Finder failed: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+    }
 
     @objc private func openDownloadPage() { NSWorkspace.shared.open(UpdateChecker.downloadPageURL) }
 
@@ -153,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         NSApp.activate(ignoringOtherApps: true)
         if settingsWindow == nil {
             let content = ContentView(onClose: { [weak self] in self?.settingsWindow?.close() })
-                .frame(width: 500, height: 600)
+                .frame(width: 500, height: 720)
             let window = NSWindow(contentViewController: NSHostingController(rootView: content))
             window.title = "Immich Desktop"
             window.styleMask = [.titled, .closable]

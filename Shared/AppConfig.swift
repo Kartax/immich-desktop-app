@@ -6,6 +6,12 @@ import Foundation
 /// on macOS (cfprefsd refuses "kCFPreferencesAnyUser with a container"). Instead a
 /// JSON file directly in the App Group container that both processes can read.
 enum AppConfig {
+    enum FolderGroupingMode: String, Codable, CaseIterable {
+        case never
+        case atLeast500
+        case always
+    }
+
     static let appGroup = "group.org.kartax.ImmichDesktop"
     // Stable, permanent domain identifier — do NOT version-bump it as a recovery trick.
     // A stuck "signed out" state is cleared by a thorough teardown in DomainManager
@@ -21,7 +27,11 @@ enum AppConfig {
         var showPersons: Bool?
         var showPlaces: Bool?
         var showAlbums: Bool?
-        var groupLargeFolders: Bool? // nil → true for existing installations
+        var groupLargeFolders: Bool? // Legacy fallback for per-view grouping modes.
+        var albumGroupingMode: FolderGroupingMode?
+        var personGroupingMode: FolderGroupingMode?
+        var placeGroupingMode: FolderGroupingMode?
+        var groupingMigrationPending: Bool?
     }
 
     private static var fileURL: URL? {
@@ -74,17 +84,28 @@ enum AppConfig {
         set { var s = load(); s.showAlbums = newValue; store(s) }
     }
 
-    static var groupLargeFolders: Bool {
-        get { load().groupLargeFolders ?? true }
-        set {
-            var s = load()
-            guard (s.groupLargeFolders ?? true) != newValue else { return }
-            s.groupLargeFolders = newValue
-            // The setting changes parent/child identifiers throughout the virtual
-            // tree. Invalidate persisted metadata together with Finder's domain.
-            s.configurationVersion = (s.configurationVersion ?? 0) &+ 1
-            store(s)
+    static var albumGroupingMode: FolderGroupingMode {
+        get {
+            let s = load()
+            return groupingMode(s.albumGroupingMode, legacyEnabled: s.groupLargeFolders)
         }
+        set { setGroupingMode(newValue, at: \.albumGroupingMode) }
+    }
+
+    static var personGroupingMode: FolderGroupingMode {
+        get {
+            let s = load()
+            return groupingMode(s.personGroupingMode, legacyEnabled: s.groupLargeFolders)
+        }
+        set { setGroupingMode(newValue, at: \.personGroupingMode) }
+    }
+
+    static var placeGroupingMode: FolderGroupingMode {
+        get {
+            let s = load()
+            return groupingMode(s.placeGroupingMode, legacyEnabled: s.groupLargeFolders)
+        }
+        set { setGroupingMode(newValue, at: \.placeGroupingMode) }
     }
 
     static var isConfigured: Bool {
@@ -107,8 +128,75 @@ enum AppConfig {
         var s = load()
         s.serverURL = serverURL
         s.apiKey = apiKey
+        _ = materializeGroupingModes(in: &s)
         s.configurationVersion = (s.configurationVersion ?? 0) &+ 1
         store(s)
+    }
+
+    /// Persists legacy grouping behavior as the three independent modes. A pending
+    /// reset remains recorded until Finder's domain has been rebuilt successfully.
+    static func migrateGroupingModesIfNeeded() -> Bool {
+        var s = load()
+        guard !(s.serverURL ?? "").isEmpty, !(s.apiKey ?? "").isEmpty else {
+            return false
+        }
+
+        let materialized = materializeGroupingModes(in: &s)
+        if materialized {
+            // Legacy false already produced a flat hierarchy, so persisting three
+            // .never modes does not require throwing away Finder's backing store.
+            if s.groupLargeFolders ?? true {
+                s.configurationVersion = (s.configurationVersion ?? 0) &+ 1
+                s.groupingMigrationPending = true
+            }
+            store(s)
+        }
+        return s.groupingMigrationPending ?? false
+    }
+
+    static func completeGroupingModeMigration() {
+        var s = load()
+        guard s.groupingMigrationPending == true else { return }
+        s.groupingMigrationPending = false
+        store(s)
+    }
+
+    private static func groupingMode(
+        _ storedMode: FolderGroupingMode?,
+        legacyEnabled: Bool?
+    ) -> FolderGroupingMode {
+        storedMode ?? ((legacyEnabled ?? true) ? .atLeast500 : .never)
+    }
+
+    private static func setGroupingMode(
+        _ newValue: FolderGroupingMode,
+        at keyPath: WritableKeyPath<Stored, FolderGroupingMode?>
+    ) {
+        var s = load()
+        let current = groupingMode(s[keyPath: keyPath], legacyEnabled: s.groupLargeFolders)
+        guard current != newValue else { return }
+        s[keyPath: keyPath] = newValue
+        // Grouping changes parent/child identifiers throughout the virtual tree.
+        s.configurationVersion = (s.configurationVersion ?? 0) &+ 1
+        store(s)
+    }
+
+    private static func materializeGroupingModes(in stored: inout Stored) -> Bool {
+        let fallback = groupingMode(nil, legacyEnabled: stored.groupLargeFolders)
+        var changed = false
+        if stored.albumGroupingMode == nil {
+            stored.albumGroupingMode = fallback
+            changed = true
+        }
+        if stored.personGroupingMode == nil {
+            stored.personGroupingMode = fallback
+            changed = true
+        }
+        if stored.placeGroupingMode == nil {
+            stored.placeGroupingMode = fallback
+            changed = true
+        }
+        return changed
     }
 
     static func flush() { /* file write is already synchronous/atomic */ }

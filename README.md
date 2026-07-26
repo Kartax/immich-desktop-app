@@ -26,9 +26,9 @@ Read-only: the app never modifies anything on the server.
   - **All Photos** → Year → Month → assets (Immich timeline)
   - one folder per **album**
   - **Persons** and **Places** (country → city)
-- Large album, person, and city folders (more than 750 assets) are automatically
-  split into **Year → Month** folders. This is enabled by default and can be turned
-  off in the settings.
+- Albums, person folders, and city folders can each be independently organized into
+  **Year → Month** folders. Choose **Never**, **500 files or more**, or **Always** for
+  each view in the settings; the 500-file mode is the default.
 - A built-in **Gallery window** (*View Gallery* in the menu bar): skim the whole
   timeline newest-first, click any photo or video to view it large (videos stream
   from the server), and jump straight to any year/month. Only what's on screen is
@@ -54,8 +54,9 @@ Immich/
 a month's assets are loaded via `POST /search/metadata` (date range, paginated,
 `withExif: true` so file sizes are known).
 
-The optional bracketed levels are added only to large album, person, and city
-folders; smaller folders stay flat.
+The optional bracketed levels follow the grouping mode selected independently for
+Albums, Persons, and Places. Assets without a usable date appear directly inside a
+single **Unknown Date** folder when grouping is active.
 
 ## Project layout
 

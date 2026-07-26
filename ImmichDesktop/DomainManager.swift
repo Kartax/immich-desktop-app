@@ -2,6 +2,39 @@ import FileProvider
 
 /// Manages the lifecycle of the Immich File Provider domain.
 enum DomainManager {
+    private actor LifecycleQueue {
+        private var tail = Task<Void, Never> {}
+        private var acceptsActivations = true
+
+        func activate(
+            _ operation: @escaping @Sendable () async throws -> Void
+        ) async throws {
+            guard acceptsActivations else { throw CancellationError() }
+            let predecessor = tail
+            let task = Task {
+                await predecessor.value
+                try await operation()
+            }
+            tail = Task { _ = try? await task.value }
+            try await task.value
+        }
+
+        func deactivate(
+            _ operation: @escaping @Sendable () async -> Void
+        ) async {
+            acceptsActivations = false
+            let predecessor = tail
+            let task = Task {
+                await predecessor.value
+                await operation()
+            }
+            tail = task
+            await task.value
+        }
+    }
+
+    private static let lifecycleQueue = LifecycleQueue()
+
     private static var domain: NSFileProviderDomain {
         NSFileProviderDomain(
             identifier: NSFileProviderDomainIdentifier(rawValue: AppConfig.domainIdentifier),
@@ -14,6 +47,12 @@ enum DomainManager {
     ///   the same identifier can be reused without resurrecting the stuck state. Use
     ///   after changing the configuration.
     static func activate(reset: Bool) async throws {
+        try await lifecycleQueue.activate {
+            try await performActivation(reset: reset)
+        }
+    }
+
+    private static func performActivation(reset: Bool) async throws {
         let target = domain
         let existing = try await NSFileProviderManager.domains()
         if reset {
@@ -90,9 +129,21 @@ enum DomainManager {
         try? await manager.signalEnumerator(for: .rootContainer)
     }
 
+    /// Returns the Finder-visible location of the Immich domain root.
+    static func userVisibleRootURL() async throws -> URL {
+        guard let manager = NSFileProviderManager(for: domain) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return try await manager.getUserVisibleURL(for: .rootContainer)
+    }
+
     /// Removes all of this app's domains so Immich disappears from Finder.
     static func deactivate() async {
-        let existing = (try? await NSFileProviderManager.domains()) ?? []
-        for d in existing { _ = try? await NSFileProviderManager.remove(d, mode: .removeAll) }
+        await lifecycleQueue.deactivate {
+            let existing = (try? await NSFileProviderManager.domains()) ?? []
+            for d in existing {
+                _ = try? await NSFileProviderManager.remove(d, mode: .removeAll)
+            }
+        }
     }
 }

@@ -13,12 +13,15 @@ struct ContentView: View {
     @State private var showAlbums   = AppConfig.showAlbums
     @State private var showPersons  = AppConfig.showPersons
     @State private var showPlaces   = AppConfig.showPlaces
-    @State private var groupLargeFolders = AppConfig.groupLargeFolders
-    @State private var restoringGroupingSetting = false
+    @State private var albumGroupingMode = AppConfig.albumGroupingMode
+    @State private var personGroupingMode = AppConfig.personGroupingMode
+    @State private var placeGroupingMode = AppConfig.placeGroupingMode
+    @State private var restoringGroupingViews: Set<AdditionalView> = []
     @State private var groupingUpdateFailed = false
     @State private var runOnStartup = SMAppService.mainApp.status == .enabled
 
     private enum Result { case ok, failed }
+    private enum AdditionalView: Hashable { case albums, persons, places }
 
     var body: some View {
         Form {
@@ -26,16 +29,20 @@ struct ContentView: View {
                 TextField("Server URL", text: $serverURL,
                           prompt: Text(verbatim: "http://192.168.1.10:2283"))
                     .textContentType(.URL)
+                    .disabled(busy)
                 SecureField("API Key", text: $apiKey,
                             prompt: Text("Paste your Immich API key"))
+                    .disabled(busy)
             } header: {
                 Text("Immich Server")
             }
             Section {
                 HStack {
                     Button("Test Connection") { Task { await test() } }
+                        .disabled(busy)
                     Button("Save & Activate") { Task { await save() } }
                         .keyboardShortcut(.defaultAction)
+                        .disabled(busy)
                     if busy { ProgressView().controlSize(.small) }
                     if let result {
                         Text(result == .ok ? "OK" : "Failed")
@@ -50,34 +57,31 @@ struct ContentView: View {
                         AppConfig.showTimeline = v
                         Task { await DomainManager.signalRoot() }
                     }
-                Toggle("Albums", isOn: $showAlbums)
-                    .onChange(of: showAlbums) { _, v in
-                        AppConfig.showAlbums = v
-                        Task { await DomainManager.signalRoot() }
-                    }
-                Toggle("Persons", isOn: $showPersons)
-                    .onChange(of: showPersons) { _, v in
-                        AppConfig.showPersons = v
-                        Task { await DomainManager.signalRoot() }
-                    }
-                Toggle("Places", isOn: $showPlaces)
-                    .onChange(of: showPlaces) { _, v in
-                        AppConfig.showPlaces = v
-                        Task { await DomainManager.signalRoot() }
-                    }
-                Toggle("Group large folders by year and month",
-                       isOn: $groupLargeFolders)
-                    .onChange(of: groupLargeFolders) { _, v in
-                        Task { await applyGroupingSetting(v) }
-                    }
                     .disabled(busy)
+                Text("Always grouped by year and month")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 20)
+            } header: {
+                Text("Views in Finder")
+            }
+            Section {
+                additionalViewRow(
+                    "Albums", isOn: $showAlbums,
+                    groupingMode: $albumGroupingMode, view: .albums)
+                additionalViewRow(
+                    "Persons", isOn: $showPersons,
+                    groupingMode: $personGroupingMode, view: .persons)
+                additionalViewRow(
+                    "Places", isOn: $showPlaces,
+                    groupingMode: $placeGroupingMode, view: .places)
                 if groupingUpdateFailed {
                     Text("Finder could not be refreshed. Please try again.")
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
             } header: {
-                Text("Views in Finder")
+                Text("Additional Views")
             }
             Section {
                 Toggle("Run on startup", isOn: $runOnStartup)
@@ -94,20 +98,63 @@ struct ContentView: View {
         }
     }
 
+    private func additionalViewRow(
+        _ title: String,
+        isOn: Binding<Bool>,
+        groupingMode: Binding<AppConfig.FolderGroupingMode>,
+        view: AdditionalView
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(title, isOn: isOn)
+                .onChange(of: isOn.wrappedValue) { _, enabled in
+                    setVisibility(enabled, for: view)
+                }
+                .disabled(busy)
+            Picker("Group by year and month", selection: groupingMode) {
+                ForEach(AppConfig.FolderGroupingMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .padding(.leading, 20)
+            .disabled(!isOn.wrappedValue || busy)
+            .onChange(of: groupingMode.wrappedValue) { _, mode in
+                Task { await applyGroupingMode(mode, for: view) }
+            }
+        }
+    }
+
+    private func setVisibility(_ enabled: Bool, for view: AdditionalView) {
+        switch view {
+        case .albums: AppConfig.showAlbums = enabled
+        case .persons: AppConfig.showPersons = enabled
+        case .places: AppConfig.showPlaces = enabled
+        }
+        Task { await DomainManager.signalRoot() }
+    }
+
     @MainActor
-    private func applyGroupingSetting(_ enabled: Bool) async {
-        if restoringGroupingSetting {
-            restoringGroupingSetting = false
+    private func applyGroupingMode(
+        _ mode: AppConfig.FolderGroupingMode,
+        for view: AdditionalView
+    ) async {
+        if restoringGroupingViews.remove(view) != nil {
             return
         }
 
-        let previousValue = AppConfig.groupLargeFolders
-        guard previousValue != enabled else { return }
+        guard !busy else {
+            restoreDisplayedGroupingMode(configuredGroupingMode(for: view), for: view)
+            return
+        }
+
+        let previousMode = configuredGroupingMode(for: view)
+        guard previousMode != mode else { return }
 
         busy = true
         result = nil
         groupingUpdateFailed = false
-        AppConfig.groupLargeFolders = enabled
+        setGroupingMode(mode, for: view)
 
         guard AppConfig.isConfigured else {
             busy = false
@@ -116,18 +163,58 @@ struct ContentView: View {
 
         do {
             try await DomainManager.activate(reset: true)
+            AppConfig.completeGroupingModeMigration()
         } catch {
             fpLog.error(
                 "Grouping setting update failed: \(error.localizedDescription, privacy: .public)"
             )
             // Keep the UI and shared configuration consistent with the hierarchy
             // that Finder still has when rebuilding its backing store fails.
-            AppConfig.groupLargeFolders = previousValue
-            restoringGroupingSetting = true
-            groupLargeFolders = previousValue
+            setGroupingMode(previousMode, for: view)
+            restoreDisplayedGroupingMode(previousMode, for: view)
             groupingUpdateFailed = true
         }
         busy = false
+    }
+
+    private func setGroupingMode(
+        _ mode: AppConfig.FolderGroupingMode,
+        for view: AdditionalView
+    ) {
+        switch view {
+        case .albums: AppConfig.albumGroupingMode = mode
+        case .persons: AppConfig.personGroupingMode = mode
+        case .places: AppConfig.placeGroupingMode = mode
+        }
+    }
+
+    private func configuredGroupingMode(
+        for view: AdditionalView
+    ) -> AppConfig.FolderGroupingMode {
+        switch view {
+        case .albums: AppConfig.albumGroupingMode
+        case .persons: AppConfig.personGroupingMode
+        case .places: AppConfig.placeGroupingMode
+        }
+    }
+
+    private func restoreDisplayedGroupingMode(
+        _ mode: AppConfig.FolderGroupingMode,
+        for view: AdditionalView
+    ) {
+        switch view {
+        case .albums where albumGroupingMode != mode:
+            restoringGroupingViews.insert(view)
+            albumGroupingMode = mode
+        case .persons where personGroupingMode != mode:
+            restoringGroupingViews.insert(view)
+            personGroupingMode = mode
+        case .places where placeGroupingMode != mode:
+            restoringGroupingViews.insert(view)
+            placeGroupingMode = mode
+        default:
+            break
+        }
     }
 
     @MainActor
@@ -164,12 +251,23 @@ struct ContentView: View {
         AppConfig.set(serverURL: serverURL, apiKey: apiKey)   // atomically into the App Group container
         do {
             try await DomainManager.activate(reset: true)
+            AppConfig.completeGroupingModeMigration()
             await ConnectionMonitor.shared.check()   // refresh the menu bar icon right away
             result = .ok
             try? await Task.sleep(for: .seconds(0.8))   // show success briefly, then close
             onClose()
         } catch {
             result = .failed
+        }
+    }
+}
+
+private extension AppConfig.FolderGroupingMode {
+    var title: String {
+        switch self {
+        case .never: "Never"
+        case .atLeast500: "500 files or more"
+        case .always: "Always"
         }
     }
 }
