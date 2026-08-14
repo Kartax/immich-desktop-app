@@ -19,7 +19,7 @@
 #   ./scripts/release.sh v0.1.0 "Release description"       # ...with custom release notes
 #
 # Publishing uploads the .dmg to this repo's GitHub Releases (PUBLISH_REPO) via
-# the GitHub CLI. Install + authenticate it once: `brew install gh && gh auth login`.
+# the GitHub CLI, then waits for Kartax/homebrew-tap to publish the matching cask.
 #
 # Override the notary profile with NOTARY_PROFILE=<name> if you named it differently.
 
@@ -204,6 +204,8 @@ Built from source commit \`$COMMIT\`."
   # Sync the tag gh just created on the remote into the local clone.
   echo "==> Fetching tag $VERSION ($COMMIT) from origin"
   git fetch origin --tags
+
+  scripts/update-homebrew-cask.sh "$VERSION"
 fi
 
 echo

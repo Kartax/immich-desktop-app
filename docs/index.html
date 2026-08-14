@@ -128,6 +128,13 @@
       background: var(--panel); border: 1px solid var(--border);
       padding: 1px 6px; border-radius: 6px; font-size: .9em;
     }
+    .brew-install { margin-top: 16px; color: var(--muted); font-size: .85rem; }
+    .brew-install code {
+      display: block; width: fit-content; max-width: 100%;
+      box-sizing: border-box; margin: 6px auto 0; padding: 7px 11px;
+      color: var(--text); overflow-wrap: anywhere; user-select: all;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
 
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; align-items: center; }
     @media (max-width: 680px) { .split { grid-template-columns: 1fr; gap: 24px; } }
@@ -193,6 +200,10 @@
         <a class="btn btn-coffee" href="https://www.buymeacoffee.com/Kartax" target="_blank" rel="noopener">
           🍺 Buy me a beer
         </a>
+      </div>
+      <div class="brew-install">
+        <span>Or install with Homebrew</span>
+        <code>brew install --cask kartax/tap/immich-desktop</code>
       </div>
       <div class="gh-links">
         <a href="https://github.com/Kartax/immich-desktop-app/issues/new">Report an issue</a>
