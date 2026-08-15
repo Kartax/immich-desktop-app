@@ -215,7 +215,7 @@ Built from source commit \`$COMMIT\`."
     --target "$(git rev-parse HEAD)" \
     --title "$VERSION" \
     --notes "$RELEASE_NOTES" \
-    "${RELEASE_FLAGS[@]}"
+    "${RELEASE_FLAGS[@]+"${RELEASE_FLAGS[@]}"}"
   echo "Published: https://github.com/$PUBLISH_REPO/releases/tag/$VERSION"
 
   # Sync the tag gh just created on the remote into the local clone.
