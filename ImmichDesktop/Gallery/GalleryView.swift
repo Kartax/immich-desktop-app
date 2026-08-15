@@ -119,6 +119,9 @@ struct GalleryView: View {
             if model.selectionCount > 0 || downloadBatch.phase == .running {
                 selectionBar
             }
+            if model.selectionCount > 0 && downloadBatch.phase != .running {
+                selectionActions
+            }
             if case .loaded = model.phase, !model.yearGroups.isEmpty {
                 jumpMenu
             }
@@ -150,22 +153,36 @@ struct GalleryView: View {
                 .disabled(downloadBatch.phase == .running)
                 .accessibilityLabel("Clear Asset selection")
                 .help("Clear selection")
-
-                Button {
-                    chooseDestinationAndStart()
-                } label: {
-                    Image(systemName: "arrow.down.circle")
-                }
-                .buttonStyle(.plain)
-                .disabled(downloadBatch.phase != .idle)
-                .accessibilityLabel("Download selected Assets")
-                .help("Download selected Assets")
             }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.black.opacity(0.55), in: Capsule())
+        .fixedSize()
+    }
+
+    /// Separate action surface for selection-wide actions. Keep this panel
+    /// independent so additional actions can be added without crowding the
+    /// selection status.
+    private var selectionActions: some View {
+        HStack(spacing: 8) {
+            Button {
+                chooseDestinationAndStart()
+            } label: {
+                Image(systemName: "arrow.down.circle")
+            }
+            .buttonStyle(.plain)
+            .disabled(downloadBatch.phase != .idle)
+            .accessibilityLabel("Download selected Assets")
+            .help("Download selected Assets")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.55),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 5, y: 2)
         .fixedSize()
     }
 
