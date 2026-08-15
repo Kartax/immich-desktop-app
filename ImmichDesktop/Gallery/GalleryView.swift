@@ -113,7 +113,7 @@ struct GalleryView: View {
             if model.selectionCount > 0 || downloadBatch.phase == .running {
                 selectionBar
             }
-            if !model.yearGroups.isEmpty {
+            if case .loaded = model.phase, !model.yearGroups.isEmpty {
                 jumpMenu
             }
         }
