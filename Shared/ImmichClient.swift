@@ -102,6 +102,7 @@ struct ImmichClient {
               (200...299).contains(statusCode) else {
             throw URLError(.badServerResponse)
         }
+        try Task.checkCancellation()
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
         return destination

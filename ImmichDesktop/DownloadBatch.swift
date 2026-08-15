@@ -46,9 +46,21 @@ final class DownloadBatch {
         let unfinished: [UnfinishedAsset]
         let cancelled: Bool
 
+        var completedCount: Int {
+            successfulAssetIDs.count
+        }
+
+        var failureCount: Int {
+            failures.count
+        }
+
+        var unfinishedCount: Int {
+            unfinished.count
+        }
+
         var isFullSuccess: Bool {
             !cancelled && failures.isEmpty && unfinished.isEmpty
-                && successfulAssetIDs.count == totalCount
+                && completedCount == totalCount
         }
     }
 

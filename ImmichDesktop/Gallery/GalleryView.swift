@@ -215,21 +215,20 @@ struct GalleryView: View {
                      ? "Download complete"
                      : result.cancelled ? "Download cancelled" : "Download finished")
                     .font(.headline)
-                Text("\(result.successfulAssetIDs.count) of \(result.totalCount) Assets downloaded.")
-                if !result.failures.isEmpty || !result.unfinished.isEmpty {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(result.failures) { failure in
-                                Text("\(failure.originalFileName): \(failure.message)")
-                            }
-                            ForEach(result.unfinished) { asset in
-                                Text("\(asset.originalFileName): Not downloaded")
-                            }
+                Text(resultSummary(result))
+                if !result.failures.isEmpty {
+                    resultSection(title: "Failed Assets") {
+                        ForEach(result.failures) { failure in
+                            Text("\(failure.originalFileName): \(failure.message)")
                         }
-                        .font(.caption)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 140)
+                }
+                if !result.unfinished.isEmpty {
+                    resultSection(title: "Unfinished Assets (retained for retry)") {
+                        ForEach(result.unfinished) { asset in
+                            Text("\(asset.originalFileName): Not downloaded")
+                        }
+                    }
                 }
                 HStack {
                     Button {
@@ -247,6 +246,33 @@ struct GalleryView: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 8)
             .padding(12)
+        }
+    }
+
+    private func resultSummary(_ result: DownloadBatch.BatchResult) -> String {
+        var parts = ["\(result.completedCount) completed"]
+        if result.failureCount > 0 {
+            parts.append("\(result.failureCount) failed")
+        }
+        if result.unfinishedCount > 0 {
+            parts.append("\(result.unfinishedCount) unfinished")
+        }
+        return parts.joined(separator: ", ") + "."
+    }
+
+    private func resultSection<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4, content: content)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 140)
+            .font(.caption)
         }
     }
 

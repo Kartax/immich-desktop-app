@@ -235,11 +235,17 @@ final class DownloadBatchTests: XCTestCase {
             makeAsset(id: "third", fileName: "third.jpg")
         ]
         let workspaceBox = TemporaryWorkspaceBox()
+        let transfer = CancellationAwareTransfer()
         let batch = DownloadBatch { assetID, temporaryURL in
             workspaceBox.value = temporaryURL.deletingLastPathComponent()
+            await transfer.recordStart(assetID)
             try Data("partial".utf8).write(to: temporaryURL)
             if assetID == "second" {
-                try await Task.sleep(nanoseconds: 60_000_000_000)
+                try await withTaskCancellationHandler(operation: {
+                    try await transfer.waitForCancellation()
+                }, onCancel: {
+                    Task { await transfer.recordCancellation() }
+                })
             }
             try Data(assetID.utf8).write(to: temporaryURL)
             return temporaryURL
@@ -249,12 +255,19 @@ final class DownloadBatchTests: XCTestCase {
         await waitUntil {
             batch.successfulAssetIDs == ["first"] && batch.progress.currentFileName == "second.jpg"
         }
+        await waitUntilAsync { await transfer.hasStarted("second") }
         batch.cancel()
         await waitForBatch(batch)
 
+        let didObserveCancellation = await transfer.didObserveCancellation()
+        let startedIDs = await transfer.startedIDs()
+        XCTAssertTrue(didObserveCancellation)
+        XCTAssertEqual(startedIDs, ["first", "second"])
         XCTAssertEqual(batch.result?.successfulAssetIDs, ["first"])
         XCTAssertEqual(batch.result?.unfinished.map(\.assetID), ["second", "third"])
         XCTAssertTrue(batch.result?.cancelled == true)
+        XCTAssertEqual(batch.result?.completedCount, 1)
+        XCTAssertEqual(batch.result?.unfinishedCount, 2)
         XCTAssertEqual(try Data(contentsOf: paths.destination.appendingPathComponent("first.jpg")),
                        Data("first".utf8))
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.destination
@@ -262,6 +275,27 @@ final class DownloadBatchTests: XCTestCase {
         if let workspace = workspaceBox.value {
             XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.path))
         }
+    }
+
+    func testCancellingSettledResultIsHarmless() async throws {
+        let paths = try makeDestination()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let asset = makeAsset(id: "complete", fileName: "complete.jpg")
+        let batch = DownloadBatch { _, temporaryURL in
+            try Data("complete".utf8).write(to: temporaryURL)
+            return temporaryURL
+        }
+
+        XCTAssertTrue(batch.start(assets: [asset], destination: paths.destination))
+        await waitForBatch(batch)
+        let settledResult = try XCTUnwrap(batch.result)
+
+        batch.cancel()
+
+        XCTAssertEqual(batch.phase, .completed)
+        XCTAssertEqual(batch.result, settledResult)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.destination
+            .appendingPathComponent("complete.jpg").path))
     }
 
     func testRunningBatchRejectsSecondStartAndRetainedResultNeedsConsumption() async throws {
@@ -318,12 +352,58 @@ final class DownloadBatchTests: XCTestCase {
                     exifInfo: nil)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async {
+    private func waitUntil(_ condition: @escaping () -> Bool) async {
+        await waitUntilAsync { condition() }
+    }
+
+    private func waitUntilAsync(_ condition: () async -> Bool) async {
         for _ in 0..<10_000 {
-            if condition() { return }
+            if await condition() { return }
             await Task.yield()
         }
         XCTFail("Condition did not become true")
+    }
+
+    private actor CancellationAwareTransfer {
+        private var startedAssetIDs: [String] = []
+        private var cancellationObserved = false
+        private var continuation: CheckedContinuation<Void, any Error>?
+
+        func recordStart(_ assetID: String) {
+            startedAssetIDs.append(assetID)
+        }
+
+        func hasStarted(_ assetID: String) -> Bool {
+            startedAssetIDs.contains(assetID)
+        }
+
+        func startedIDs() -> [String] {
+            startedAssetIDs
+        }
+
+        func waitForCancellation() async throws {
+            if cancellationObserved {
+                throw CancellationError()
+            }
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                if cancellationObserved {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    self.continuation = continuation
+                }
+            }
+        }
+
+        func recordCancellation() {
+            cancellationObserved = true
+            continuation?.resume(throwing: CancellationError())
+            continuation = nil
+        }
+
+        func didObserveCancellation() -> Bool {
+            cancellationObserved
+        }
     }
 
     private actor TransferCallRecorder {
