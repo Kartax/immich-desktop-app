@@ -57,6 +57,7 @@ struct GalleryView: View {
             }
         }
         .frame(minWidth: 640, minHeight: 480)
+        .task { await model.initialLoad() }
         .onChange(of: downloadBatch.successfulAssetIDs) { _, completedIDs in
             model.removeSelectedAssets(completedIDs)
         }
@@ -307,7 +308,7 @@ private struct GalleryCell: View {
         }
         .buttonStyle(.plain)
         .opacity(isSelected || isHovering ? 1 : 0)
-        .disabled(selectionDisabled)
+        .allowsHitTesting(!selectionDisabled && (isSelected || isHovering))
         .accessibilityLabel(selectionAccessibilityLabel)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .help(isSelected ? "Deselect Asset" : "Select Asset")

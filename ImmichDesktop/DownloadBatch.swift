@@ -78,11 +78,28 @@ final class DownloadBatch {
     @discardableResult
     func start(assets: [ImmichAsset], destination: URL) -> Bool {
         guard phase == .idle, task == nil, !assets.isEmpty else { return false }
+
+        // A URL returned by NSOpenPanel may require a security-scoped extension
+        // before even reading its resource values. Keep that extension alive for
+        // every validation and for the complete transfer lifetime.
+        let securityScopeActive = destination.startAccessingSecurityScopedResource()
+        var securityScopeTransferredToRun = false
+        defer {
+            if securityScopeActive && !securityScopeTransferredToRun {
+                destination.stopAccessingSecurityScopedResource()
+            }
+        }
+
         guard (try? destination.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        else { return false }
+        else {
+            return false
+        }
+
         var seenIDs = Set<String>()
         let snapshot = assets.filter { seenIDs.insert($0.id).inserted }
-        guard !snapshot.isEmpty else { return false }
+        guard !snapshot.isEmpty else {
+            return false
+        }
 
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImmichDesktop-DownloadBatch-\(UUID().uuidString)",
@@ -101,8 +118,8 @@ final class DownloadBatch {
         successfulAssetIDs = []
         result = nil
         cancelRequested = false
+        securityScopeTransferredToRun = true
 
-        let securityScopeActive = destination.startAccessingSecurityScopedResource()
         task = Task { [weak self] in
             await self?.run(snapshot: snapshot,
                             destination: destination,
