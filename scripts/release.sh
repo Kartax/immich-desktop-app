@@ -15,11 +15,13 @@
 #
 # Usage:
 #   ./scripts/release.sh                                    # build + notarize a local .dmg only
-#   ./scripts/release.sh v0.1.0                             # ...and publish it as a GitHub Release
+#   ./scripts/release.sh v0.1.0                             # ...and publish a stable GitHub Release
+#   ./scripts/release.sh v1.5.0b1                          # ...and publish a GitHub Pre-Release
 #   ./scripts/release.sh v0.1.0 "Release description"       # ...with custom release notes
 #
 # Publishing uploads the .dmg to this repo's GitHub Releases (PUBLISH_REPO) via
-# the GitHub CLI, then waits for Kartax/homebrew-tap to publish the matching cask.
+# the GitHub CLI. Stable releases also trigger the Homebrew cask update; pre-releases
+# are intentionally skipped.
 #
 # Override the notary profile with NOTARY_PROFILE=<name> if you named it differently.
 
@@ -32,23 +34,37 @@ APP_NAME="ImmichDesktop"
 NOTARY_PROFILE="${NOTARY_PROFILE:-NOTARY}"
 # This same repo hosts the download page (docs/ via Pages) and release binaries.
 PUBLISH_REPO="${PUBLISH_REPO:-Kartax/immich-desktop-app}"
-VERSION="${1:-}"   # e.g. v0.1.0 — when set, the .dmg is published as a Release
+VERSION="${1:-}"   # e.g. v0.1.0 or v1.5.0b1 — when set, the .dmg is published
 NOTES="${2:-}"     # optional release description; replaces the default notes text
 
 # Resolve repo root up front (this script lives in scripts/) so all git and build
 # commands run against the code repo regardless of the caller's cwd.
 cd "$(dirname "$0")/.."
 
-# Single source of truth: the version passed on the command line is also baked
-# into the app (CFBundleShortVersionString), so project.yml's MARKETING_VERSION
-# is just a fallback for local no-arg builds. The build number is a timestamp so
-# it is always unique and monotonic.
+# Single source of truth: the numeric base version passed on the command line is
+# baked into the app (CFBundleShortVersionString). A beta suffix stays on the tag
+# and GitHub Release, because Apple's bundle version must remain numeric.
 VERSION_OVERRIDES=()
+RELEASE_FLAGS=()
 COMMIT=""
+IS_PRERELEASE=false
 if [[ -n "$VERSION" ]]; then
-  MARKETING="${VERSION#v}"                 # strip leading "v" -> 0.2.0
+  if [[ "$VERSION" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
+    MARKETING="${BASH_REMATCH[1]}"
+    IS_PRERELEASE=true
+  elif [[ "$VERSION" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    MARKETING="${BASH_REMATCH[1]}"
+  else
+    echo "!! Invalid version '$VERSION'." >&2
+    echo "   Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCHbN." >&2
+    exit 1
+  fi
   BUILD_NUMBER="$(date +%Y%m%d%H%M)"
   VERSION_OVERRIDES=( "MARKETING_VERSION=$MARKETING" "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" )
+
+  if [[ "$IS_PRERELEASE" == true ]]; then
+    RELEASE_FLAGS+=( --prerelease --latest=false )
+  fi
 
   # --- pre-flight guards (fail fast, before the long build) ----------------
   # Ensure the source tag we create later actually matches the built .dmg.
@@ -198,14 +214,19 @@ Built from source commit \`$COMMIT\`."
     --repo "$PUBLISH_REPO" \
     --target "$(git rev-parse HEAD)" \
     --title "$VERSION" \
-    --notes "$RELEASE_NOTES"
+    --notes "$RELEASE_NOTES" \
+    "${RELEASE_FLAGS[@]}"
   echo "Published: https://github.com/$PUBLISH_REPO/releases/tag/$VERSION"
 
   # Sync the tag gh just created on the remote into the local clone.
   echo "==> Fetching tag $VERSION ($COMMIT) from origin"
   git fetch origin --tags
 
-  scripts/update-homebrew-cask.sh "$VERSION"
+  if [[ "$IS_PRERELEASE" == true ]]; then
+    echo "==> Skipping Homebrew cask update for pre-release $VERSION"
+  else
+    scripts/update-homebrew-cask.sh "$VERSION"
+  fi
 fi
 
 echo
