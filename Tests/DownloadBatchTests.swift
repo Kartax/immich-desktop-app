@@ -70,11 +70,93 @@ final class DownloadBatchTests: XCTestCase {
                        Data("video".utf8))
     }
 
+    func testProgressAdvancesDeterministicallyInSnapshotOrder() async throws {
+        let paths = try makeDestination()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let assets = [
+            makeAsset(id: "first", fileName: "first.jpg"),
+            makeAsset(id: "second", type: "VIDEO", fileName: "second.mov"),
+            makeAsset(id: "third", fileName: "third.jpg")
+        ]
+        let permit = TransferPermit()
+        let batch = DownloadBatch { assetID, temporaryURL in
+            await permit.wait()
+            try Data(assetID.utf8).write(to: temporaryURL)
+            return temporaryURL
+        }
+
+        XCTAssertTrue(batch.start(assets: assets, destination: paths.destination))
+        await waitUntil { batch.progress.currentFileName == "first.jpg" }
+        XCTAssertEqual(batch.progress,
+                       DownloadBatch.Progress(completedCount: 0,
+                                              totalCount: 3,
+                                              currentFileName: "first.jpg"))
+
+        await permit.release()
+        await waitUntil { batch.progress.currentFileName == "second.mov" }
+        XCTAssertEqual(batch.progress,
+                       DownloadBatch.Progress(completedCount: 1,
+                                              totalCount: 3,
+                                              currentFileName: "second.mov"))
+
+        await permit.release()
+        await waitUntil { batch.progress.currentFileName == "third.jpg" }
+        XCTAssertEqual(batch.progress,
+                       DownloadBatch.Progress(completedCount: 2,
+                                              totalCount: 3,
+                                              currentFileName: "third.jpg"))
+
+        await permit.release()
+        await waitForBatch(batch)
+        XCTAssertEqual(batch.progress,
+                       DownloadBatch.Progress(completedCount: 3,
+                                              totalCount: 3,
+                                              currentFileName: nil))
+        XCTAssertEqual(batch.result?.successfulAssetIDs, assets.map(\.id))
+    }
+
+    func testStartSnapshotsAssetsAndDestination() async throws {
+        let paths = try makeDestination()
+        let alternateRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DownloadBatchTests-\(UUID().uuidString)", isDirectory: true)
+        let alternateDestination = alternateRoot.appendingPathComponent("Destination",
+                                                                          isDirectory: true)
+        try FileManager.default.createDirectory(at: alternateDestination,
+                                                withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: paths.root)
+            try? FileManager.default.removeItem(at: alternateRoot)
+        }
+
+        var selectedAssets = [
+            makeAsset(id: "one", fileName: "one.jpg"),
+            makeAsset(id: "two", fileName: "two.jpg")
+        ]
+        var selectedDestination = paths.destination
+        let batch = DownloadBatch { assetID, temporaryURL in
+            try Data(assetID.utf8).write(to: temporaryURL)
+            return temporaryURL
+        }
+
+        XCTAssertTrue(batch.start(assets: selectedAssets, destination: selectedDestination))
+        selectedAssets.removeAll()
+        selectedDestination = alternateDestination
+        await waitForBatch(batch)
+
+        XCTAssertEqual(batch.result?.successfulAssetIDs, ["one", "two"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.destination
+            .appendingPathComponent("one.jpg").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.destination
+            .appendingPathComponent("two.jpg").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternateDestination
+            .appendingPathComponent("one.jpg").path))
+    }
+
     func testDuplicateOriginalNamesUseCollisionFreeNumericSuffixes() async throws {
         let paths = try makeDestination()
         defer { try? FileManager.default.removeItem(at: paths.root) }
         try Data("existing".utf8)
-            .write(to: paths.destination.appendingPathComponent("same.jpg"))
+            .write(to: paths.destination.appendingPathComponent("SAME.jpg"))
         let assets = [
             makeAsset(id: "one", fileName: "same.jpg"),
             makeAsset(id: "two", fileName: "same.jpg")
@@ -87,7 +169,7 @@ final class DownloadBatchTests: XCTestCase {
         XCTAssertTrue(batch.start(assets: assets, destination: paths.destination))
         await waitForBatch(batch)
 
-        XCTAssertEqual(try Data(contentsOf: paths.destination.appendingPathComponent("same.jpg")),
+        XCTAssertEqual(try Data(contentsOf: paths.destination.appendingPathComponent("SAME.jpg")),
                        Data("existing".utf8))
         XCTAssertEqual(try Data(contentsOf: paths.destination.appendingPathComponent("same 2.jpg")),
                        Data("one".utf8))
@@ -123,7 +205,9 @@ final class DownloadBatchTests: XCTestCase {
             makeAsset(id: "failed", fileName: "failed.jpg"),
             makeAsset(id: "last", fileName: "last.jpg")
         ]
+        let calls = TransferCallRecorder()
         let batch = DownloadBatch { assetID, temporaryURL in
+            await calls.record(assetID)
             if assetID == "failed" { throw TransferError.denied }
             try Data(assetID.utf8).write(to: temporaryURL)
             return temporaryURL
@@ -138,6 +222,8 @@ final class DownloadBatchTests: XCTestCase {
         XCTAssertTrue(batch.result?.unfinished.isEmpty == true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.destination
             .appendingPathComponent("last.jpg").path))
+        let transferCalls = await calls.snapshot()
+        XCTAssertEqual(transferCalls, ["first", "failed", "last"])
     }
 
     func testCancellationKeepsCompletedFilesAndReportsUnfinishedAssets() async throws {
@@ -238,6 +324,41 @@ final class DownloadBatchTests: XCTestCase {
             await Task.yield()
         }
         XCTFail("Condition did not become true")
+    }
+
+    private actor TransferCallRecorder {
+        private var calls: [String] = []
+
+        func record(_ assetID: String) {
+            calls.append(assetID)
+        }
+
+        func snapshot() -> [String] {
+            calls
+        }
+    }
+
+    private actor TransferPermit {
+        private var permits = 0
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func wait() async {
+            if permits > 0 {
+                permits -= 1
+                return
+            }
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+
+        func release() {
+            if waiters.isEmpty {
+                permits += 1
+            } else {
+                waiters.removeFirst().resume()
+            }
+        }
     }
 
     private enum TransferError: LocalizedError {

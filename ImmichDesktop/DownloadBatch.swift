@@ -154,7 +154,7 @@ final class DownloadBatch {
         var successfulIDs: [String] = []
         var failures: [Failure] = []
         var unfinished: [UnfinishedAsset] = []
-        var reservedNames = Set<String>()
+        var reservedNames = Self.existingFilenameKeys(in: destination)
         var processedCount = 0
         var cancelled = false
 
@@ -329,6 +329,14 @@ final class DownloadBatch {
 
     private static func filenameKey(_ name: String) -> String {
         name.precomposedStringWithCanonicalMapping.lowercased()
+    }
+
+    /// Reserve names already present in the destination using the same
+    /// case- and normalization-insensitive key used for batch collisions.
+    private static func existingFilenameKeys(in destination: URL) -> Set<String> {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: destination.path)
+        else { return [] }
+        return Set(names.map(filenameKey))
     }
 
     private static func parseDate(_ raw: String?) -> Date? {

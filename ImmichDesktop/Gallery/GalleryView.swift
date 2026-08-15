@@ -57,6 +57,14 @@ struct GalleryView: View {
             }
         }
         .frame(minWidth: 640, minHeight: 480)
+        // Keep the app-owned batch observable while the gallery is still loading
+        // or has temporarily failed to load its timeline.
+        .overlay(alignment: .topTrailing) {
+            galleryControls
+        }
+        .overlay(alignment: .bottom) {
+            downloadResultBanner
+        }
         .task { await model.initialLoad() }
         .onChange(of: downloadBatch.successfulAssetIDs) { _, completedIDs in
             model.removeSelectedAssets(completedIDs)
@@ -98,20 +106,18 @@ struct GalleryView: View {
                 }
             }
         }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 8) {
-                if model.selectionCount > 0 || downloadBatch.phase == .running {
-                    selectionBar
-                }
-                if !model.yearGroups.isEmpty {
-                    jumpMenu
-                }
+    }
+
+    private var galleryControls: some View {
+        HStack(spacing: 8) {
+            if model.selectionCount > 0 || downloadBatch.phase == .running {
+                selectionBar
             }
-            .padding(12)
+            if !model.yearGroups.isEmpty {
+                jumpMenu
+            }
         }
-        .overlay(alignment: .bottom) {
-            downloadResultBanner
-        }
+        .padding(12)
     }
 
     private var selectionBar: some View {
@@ -247,9 +253,7 @@ struct GalleryView: View {
     }
 
     private func chooseDestinationAndStart() {
-        guard downloadBatch.phase == .idle else { return }
-        let assets = model.selectedAssets
-        guard !assets.isEmpty else { return }
+        guard downloadBatch.phase == .idle, !model.selectedAssets.isEmpty else { return }
 
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -257,11 +261,14 @@ struct GalleryView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Download"
         panel.message = "Choose a destination folder for the selected Assets."
+        let galleryModel = model
         let batch = downloadBatch
         panel.begin { response in
             let destination = response == .OK ? panel.url : nil
             Task { @MainActor in
                 guard let destination else { return }
+                let assets = galleryModel.selectedAssets
+                guard !assets.isEmpty else { return }
                 _ = batch.start(assets: assets, destination: destination)
             }
         }
@@ -309,6 +316,7 @@ private struct GalleryCell: View {
         .buttonStyle(.plain)
         .opacity(isSelected || isHovering ? 1 : 0)
         .allowsHitTesting(!selectionDisabled && (isSelected || isHovering))
+        .disabled(selectionDisabled)
         .accessibilityLabel(selectionAccessibilityLabel)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .help(isSelected ? "Deselect Asset" : "Select Asset")
