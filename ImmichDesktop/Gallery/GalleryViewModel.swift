@@ -43,6 +43,15 @@ final class GalleryViewModel {
     private(set) var yearGroups: [YearGroup] = []
     /// Non-nil while showing a jumped-to timeline window (ISO `takenBefore` date).
     private(set) var anchor: String?
+    /// Asset selection is limited to Asset IDs already loaded in this timeline window.
+    private(set) var selectedAssetIDs = Set<String>()
+    var selectionCount: Int { selectedAssetIDs.count }
+    var selectedAssets: [ImmichAsset] {
+        assets.filter { selectedAssetIDs.contains($0.id) }
+    }
+    private var selectionAnchorID: String?
+    private static let pageSize = 200
+    private static let triggerWindow = 40
 
     private var nextPage: Int? = 1
     private var seenIds = Set<String>()
@@ -56,17 +65,14 @@ final class GalleryViewModel {
     /// can detect it became stale and must not append to the new list.
     private var generation = 0
 
-    private static let pageSize = 200
-    private static let triggerWindow = 40
-
     func initialLoad() async {
+        anchor = nil
+        resetList()
         guard let client = ImmichClient() else {
             phase = .notConfigured
             return
         }
         self.client = client
-        anchor = nil
-        resetList()
         phase = .loading
         // The buckets feed only the jump menu — fetched alongside page 1, and a
         // failure just leaves the menu empty instead of failing the gallery.
@@ -105,6 +111,41 @@ final class GalleryViewModel {
 
     func index(of asset: ImmichAsset) -> Int? { indexById[asset.id] }
 
+    func isSelected(_ assetID: String) -> Bool {
+        selectedAssetIDs.contains(assetID)
+    }
+
+    /// Toggles one loaded Asset or adds the inclusive loaded range from the current
+    /// anchor. Shift-range selection never clears non-contiguous existing selection.
+    func toggleSelection(of assetID: String, withShift: Bool) {
+        guard indexById[assetID] != nil else { return }
+        if withShift,
+           let anchorID = selectionAnchorID,
+           let anchorIndex = indexById[anchorID],
+           let targetIndex = indexById[assetID] {
+            let range = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+            selectedAssetIDs.formUnion(assets[range].map(\.id))
+        } else if !selectedAssetIDs.insert(assetID).inserted {
+            selectedAssetIDs.remove(assetID)
+        }
+        selectionAnchorID = assetID
+    }
+
+    func clearSelection() {
+        selectedAssetIDs.removeAll()
+        selectionAnchorID = nil
+    }
+
+    /// Removes Assets that completed successfully while leaving failed and unfinished
+    /// Assets selected for a retry.
+    func removeSelectedAssets(_ assetIDs: [String]) {
+        let ids = Set(assetIDs)
+        selectedAssetIDs.subtract(ids)
+        if let selectionAnchorID, ids.contains(selectionAnchorID) {
+            self.selectionAnchorID = nil
+        }
+    }
+
     private func loadFirstPage() async {
         guard let client else { return }
         do {
@@ -119,6 +160,8 @@ final class GalleryViewModel {
 
     private func resetList() {
         generation += 1
+        selectedAssetIDs = []
+        selectionAnchorID = nil
         assets = []
         sections = []
         seenIds = []

@@ -19,7 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var galleryWindow: NSWindow?
+    private let downloadBatch = DownloadBatch()
     private var domainActivationTask: Task<Void, Never>?
+    private var terminationInProgress = false
 
     // Menu bar icon — same SF Symbol as the Finder sidebar (FileProviderExt Info.plist
     // CFBundleSymbolName), so menu bar and Finder match. A template image so the system
@@ -177,10 +179,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     @objc private func openDownloadPage() { NSWorkspace.shared.open(UpdateChecker.downloadPageURL) }
-
     @objc private func quit() {
-        // Remove the Finder integration, then quit, so "quit" really means off.
-        Task {
+        guard !terminationInProgress else { return }
+        if downloadBatch.phase == .running {
+            let alert = NSAlert()
+            alert.messageText = "Download in progress"
+            alert.informativeText = "Quitting now will cancel the active Download batch."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Continue Download")
+            let cancelButton = alert.addButton(withTitle: "Quit and Cancel Download")
+            cancelButton.hasDestructiveAction = true
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            downloadBatch.cancel()
+        }
+
+        terminationInProgress = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            while self.downloadBatch.phase == .running {
+                await Task.yield()
+            }
             await DomainManager.deactivate()
             NSApplication.shared.terminate(nil)
         }
@@ -208,7 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @MainActor private func showGallery() {
         NSApp.activate(ignoringOtherApps: true)
         if galleryWindow == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: GalleryView()))
+            let window = NSWindow(contentViewController:
+                NSHostingController(rootView: GalleryView(downloadBatch: downloadBatch)))
             window.title = "Immich Desktop"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.setContentSize(NSSize(width: 1000, height: 700))

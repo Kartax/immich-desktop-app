@@ -56,6 +56,18 @@ targets:
         CODE_SIGN_ENTITLEMENTS: FileProviderExt/FileProviderExt.entitlements
         GENERATE_INFOPLIST_FILE: NO
 
+
+  DownloadBatchTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+    dependencies:
+      - target: ImmichDesktop
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.kartax.ImmichDesktopTests
+        GENERATE_INFOPLIST_FILE: YES
 # Explicit, runnable scheme for the app so it survives regeneration and Xcode
 # always knows what to launch (avoids the "Choose an app to run" dialog).
 schemes:
@@ -65,5 +77,8 @@ schemes:
         ImmichDesktop: all
     run:
       config: Debug
+    test:
+      targets:
+        - name: DownloadBatchTests
     archive:
       config: Release

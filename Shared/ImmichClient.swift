@@ -84,13 +84,27 @@ struct ImmichClient {
     }
 
     /// Downloads the original into a temporary file and returns its URL.
+    /// The caller owns the returned file and is responsible for removing or moving it.
     func downloadOriginal(id: String) async throws -> URL {
-        let (tmp, _) = try await URLSession.shared.download(for: request("assets/\(id)/original"))
-        let dest = URL(fileURLWithPath: NSTemporaryDirectory())
+        let destination = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(UUID().uuidString)
-        try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: tmp, to: dest)
-        return dest
+        return try await downloadOriginal(id: id, to: destination)
+    }
+
+    /// Downloads the original into the caller-provided temporary destination.
+    /// Keeping ownership explicit lets a Download batch remove all of its artifacts
+    /// when a transfer is cancelled or fails.
+    func downloadOriginal(id: String, to destination: URL) async throws -> URL {
+        let (temporaryURL, response) = try await URLSession.shared.download(
+            for: request("assets/\(id)/original"))
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        guard let statusCode = (response as? HTTPURLResponse)?.statusCode,
+              (200...299).contains(statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        return destination
     }
 
     /// Server-generated image sizes for GET /assets/{id}/thumbnail. `fullsize` is
