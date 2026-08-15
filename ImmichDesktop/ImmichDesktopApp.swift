@@ -233,9 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             window.setContentSize(NSSize(width: 1000, height: 700))
             window.contentMinSize = NSSize(width: 640, height: 480)
             // The gallery owns its timeline and selection only for this window.
-            // Releasing the window on close ensures reopening cannot resurrect
-            // an idle Asset selection or thumbnail cache.
-            window.isReleasedWhenClosed = true
+            // windowWillClose drops the SwiftUI hierarchy and its thumbnail cache
+            // before the next open, while retaining the NSWindow itself so closing
+            // the last visible window cannot terminate this menu-bar app.
+            window.isReleasedWhenClosed = false
             window.center()
             window.delegate = self
             galleryWindow = window
