@@ -232,11 +232,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.setContentSize(NSSize(width: 1000, height: 700))
             window.contentMinSize = NSSize(width: 640, height: 480)
-            window.isReleasedWhenClosed = false
+            // The gallery owns its timeline and selection only for this window.
+            // Releasing the window on close ensures reopening cannot resurrect
+            // an idle Asset selection or thumbnail cache.
+            window.isReleasedWhenClosed = true
             window.center()
-            // Unlike the settings window, this one is discarded on close (see
-            // windowWillClose): frees the asset list + thumbnail cache and gives a
-            // fresh timeline on reopen.
             window.delegate = self
             galleryWindow = window
         }
@@ -245,6 +245,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func windowWillClose(_ notification: Notification) {
         if let window = notification.object as? NSWindow, window === galleryWindow {
+            // Drop the SwiftUI hierarchy before releasing the window. The
+            // app-owned DownloadBatch remains alive independently of the gallery.
+            window.contentViewController = nil
             galleryWindow = nil
         }
     }

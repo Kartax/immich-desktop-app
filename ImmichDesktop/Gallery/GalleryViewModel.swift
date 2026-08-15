@@ -61,35 +61,40 @@ final class GalleryViewModel {
     private var indexById: [String: Int] = [:]
     private var sectionIndexByKey: [String: Int] = [:]
     private var client: ImmichClient?
-    /// Bumped on every reset (initial load / jump) so an in-flight load-more task
-    /// can detect it became stale and must not append to the new list.
+    /// Bumped on every reset so in-flight page and bucket loads can detect they
+    /// became stale and must not mutate the new timeline.
     private var generation = 0
 
     func initialLoad() async {
-        anchor = nil
-        resetList()
+        let loadGeneration = resetList(to: nil)
         guard let client = ImmichClient() else {
+            guard loadGeneration == generation else { return }
             phase = .notConfigured
             return
         }
         self.client = client
+        guard loadGeneration == generation else { return }
         phase = .loading
         // The buckets feed only the jump menu — fetched alongside page 1, and a
         // failure just leaves the menu empty instead of failing the gallery.
         async let buckets = client.monthBuckets()
-        await loadFirstPage()
-        yearGroups = Self.groupBuckets((try? await buckets) ?? [])
+        await loadFirstPage(forGeneration: loadGeneration)
+        let groups = Self.groupBuckets((try? await buckets) ?? [])
+        guard loadGeneration == generation else { return }
+        yearGroups = groups
     }
 
     /// Re-anchors the timeline at the given month ("2024-03"); nil returns to the
     /// latest photos. Loads a single page starting there — nothing in between.
     func jump(toMonth month: String?) async {
         guard client != nil else { return }
-        anchor = month.map { ImmichClient.monthRange($0).before }
-        resetList()
+        let loadGeneration = resetList(
+            to: month.map { ImmichClient.monthRange($0).before }
+        )
         phase = .loading
-        await loadFirstPage()
+        await loadFirstPage(forGeneration: loadGeneration)
     }
+
 
     /// Pagination trigger, called from every cell's `.onAppear`.
     func loadMoreIfNeeded(after asset: ImmichAsset) {
@@ -118,16 +123,20 @@ final class GalleryViewModel {
     /// Toggles one loaded Asset or adds the inclusive loaded range from the current
     /// anchor. Shift-range selection never clears non-contiguous existing selection.
     func toggleSelection(of assetID: String, withShift: Bool) {
-        guard indexById[assetID] != nil else { return }
+        guard let targetIndex = indexById[assetID] else { return }
         if withShift,
            let anchorID = selectionAnchorID,
-           let anchorIndex = indexById[anchorID],
-           let targetIndex = indexById[assetID] {
+           let anchorIndex = indexById[anchorID] {
             let range = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
             selectedAssetIDs.formUnion(assets[range].map(\.id))
-        } else if !selectedAssetIDs.insert(assetID).inserted {
+            return
+        }
+
+        if !selectedAssetIDs.insert(assetID).inserted {
             selectedAssetIDs.remove(assetID)
         }
+        // A regular toggle establishes the next range anchor. A valid Shift
+        // range keeps its existing anchor so repeated ranges remain predictable.
         selectionAnchorID = assetID
     }
 
@@ -146,20 +155,24 @@ final class GalleryViewModel {
         }
     }
 
-    private func loadFirstPage() async {
-        guard let client else { return }
+    private func loadFirstPage(forGeneration expectedGeneration: Int) async {
+        guard expectedGeneration == generation, let client else { return }
         do {
             let page = try await client.assetsPage(page: 1, size: Self.pageSize,
                                                    takenBefore: anchor)
+            guard expectedGeneration == generation else { return }
             append(page.assets, nextPage: page.nextPage)
             phase = assets.isEmpty ? .empty : .loaded
         } catch {
+            guard expectedGeneration == generation else { return }
             phase = .error(error.localizedDescription)
         }
     }
 
-    private func resetList() {
+    @discardableResult
+    private func resetList(to newAnchor: String?) -> Int {
         generation += 1
+        anchor = newAnchor
         selectedAssetIDs = []
         selectionAnchorID = nil
         assets = []
@@ -170,6 +183,7 @@ final class GalleryViewModel {
         sectionIndexByKey = [:]
         nextPage = 1
         isLoadingMore = false
+        return generation
     }
 
     private func append(_ newAssets: [ImmichAsset], nextPage: Int?) {

@@ -42,7 +42,10 @@ struct GalleryView: View {
                 } description: {
                     Text(message)
                 } actions: {
-                    Button("Retry") { Task { await model.initialLoad() } }
+                    Button("Retry") {
+                        selectedIndex = nil
+                        Task { await model.initialLoad() }
+                    }
                 }
             case .loaded:
                 grid
@@ -249,6 +252,9 @@ struct GalleryView: View {
 
     private func jump(toMonth month: String?) {
         guard downloadBatch.phase != .running else { return }
+        // A timeline reset replaces the loaded ordering, so detail must close
+        // before the old index can become invalid.
+        selectedIndex = nil
         Task { await model.jump(toMonth: month) }
     }
 
