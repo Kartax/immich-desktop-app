@@ -31,3 +31,17 @@
 - `./scripts/release.sh` builds and notarizes a local DMG; `./scripts/release.sh vX.Y.Z ["notes"]` also publishes it to GitHub. It needs `create-dmg`, a Developer ID certificate, a `NOTARY` keychain profile (or `NOTARY_PROFILE` override), and authenticated `gh` to publish.
 - Publishing requires a clean worktree by default (`ALLOW_DIRTY=1` overrides it); `gh release create` creates the release tag at the built commit.
 - Do not create commits on the user's behalf.
+
+## Agent skills
+
+### Issue tracker
+
+Publish issues and PRDs to GitHub. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the canonical triage label mapping. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context glossary and ADR layout. See `docs/agents/domain.md`.
