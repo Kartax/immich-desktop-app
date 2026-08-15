@@ -44,7 +44,7 @@ struct GalleryView: View {
                 } actions: {
                     Button("Retry") {
                         selectedIndex = nil
-                        Task { await model.initialLoad() }
+                        Task { await loadInitialGallery() }
                     }
                 }
             case .loaded:
@@ -68,9 +68,12 @@ struct GalleryView: View {
         .overlay(alignment: .bottom) {
             downloadResultBanner
         }
-        .task { await model.initialLoad() }
+        .task { await loadInitialGallery() }
         .onChange(of: downloadBatch.successfulAssetIDs) { _, completedIDs in
             model.removeSelectedAssets(completedIDs)
+        }
+        .onChange(of: downloadBatch.result) { _, _ in
+            restoreRetryableSelection()
         }
     }
 
@@ -237,6 +240,7 @@ struct GalleryView: View {
                         Label("Show in Finder", systemImage: "folder")
                     }
                     Button("Dismiss") {
+                        restoreRetryableSelection()
                         downloadBatch.consumeResult()
                     }
                 }
@@ -282,6 +286,18 @@ struct GalleryView: View {
         // before the old index can become invalid.
         selectedIndex = nil
         Task { await model.jump(toMonth: month) }
+    }
+
+    private func loadInitialGallery() async {
+        await model.initialLoad()
+        restoreRetryableSelection()
+    }
+
+    private func restoreRetryableSelection() {
+        guard downloadBatch.phase == .completed,
+              let result = downloadBatch.result else { return }
+        model.removeSelectedAssets(result.successfulAssetIDs)
+        model.restoreSelection(for: result.retryableAssetIDs)
     }
 
     private func chooseDestinationAndStart() {

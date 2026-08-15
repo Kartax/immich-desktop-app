@@ -50,6 +50,9 @@ final class GalleryViewModel {
         assets.filter { selectedAssetIDs.contains($0.id) }
     }
     private var selectionAnchorID: String?
+    /// Retryable Assets not loaded yet are selected as their pages arrive.
+    private var pendingSelectionIDs = Set<String>()
+
     private static let pageSize = 200
     private static let triggerWindow = 40
 
@@ -124,6 +127,8 @@ final class GalleryViewModel {
     /// anchor. Shift-range selection never clears non-contiguous existing selection.
     func toggleSelection(of assetID: String, withShift: Bool) {
         guard let targetIndex = indexById[assetID] else { return }
+        pendingSelectionIDs.remove(assetID)
+
         if withShift,
            let anchorID = selectionAnchorID,
            let anchorIndex = indexById[anchorID] {
@@ -140,8 +145,11 @@ final class GalleryViewModel {
         selectionAnchorID = assetID
     }
 
+
     func clearSelection() {
         selectedAssetIDs.removeAll()
+        pendingSelectionIDs.removeAll()
+
         selectionAnchorID = nil
     }
 
@@ -153,6 +161,17 @@ final class GalleryViewModel {
         if let selectionAnchorID, ids.contains(selectionAnchorID) {
             self.selectionAnchorID = nil
         }
+        pendingSelectionIDs.subtract(ids)
+    }
+
+    /// Reconnects retryable Assets from a retained Download batch result. Only
+    /// Assets already loaded into this timeline are selected immediately; later
+    /// pages select matching IDs as they arrive.
+    func restoreSelection(for assetIDs: [String]) {
+        pendingSelectionIDs = Set(assetIDs)
+        selectedAssetIDs.formUnion(
+            assets.compactMap { pendingSelectionIDs.contains($0.id) ? $0.id : nil }
+        )
     }
 
     private func loadFirstPage(forGeneration expectedGeneration: Int) async {
@@ -175,6 +194,8 @@ final class GalleryViewModel {
         anchor = newAnchor
         selectedAssetIDs = []
         selectionAnchorID = nil
+        pendingSelectionIDs = []
+
         assets = []
         sections = []
         seenIds = []
@@ -193,6 +214,9 @@ final class GalleryViewModel {
             // would crash ForEach, so drop repeats here.
             guard seenIds.insert(asset.id).inserted else { continue }
             indexById[asset.id] = assets.count
+            if pendingSelectionIDs.contains(asset.id) {
+                selectedAssetIDs.insert(asset.id)
+            }
             assets.append(asset)
             let key = asset.fileCreatedAt.map { String($0.prefix(7)) } ?? "unknown"
             if let i = sectionIndexByKey[key] {

@@ -62,6 +62,11 @@ final class DownloadBatch {
             !cancelled && failures.isEmpty && unfinished.isEmpty
                 && completedCount == totalCount
         }
+
+        /// Assets that can be selected again after a partial or cancelled batch.
+        var retryableAssetIDs: [String] {
+            failures.map(\.assetID) + unfinished.map(\.assetID)
+        }
     }
 
     private(set) var phase: Phase = .idle

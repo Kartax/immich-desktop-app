@@ -298,6 +298,40 @@ final class DownloadBatchTests: XCTestCase {
             .appendingPathComponent("complete.jpg").path))
     }
 
+    func testLaterObserverReconnectsWhileRunningAndAfterCompletionWithoutDeletingOutput() async throws {
+        let paths = try makeDestination()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let asset = makeAsset(id: "one", fileName: "one.jpg")
+        let permit = TransferPermit()
+        let batch = DownloadBatch { _, temporaryURL in
+            await permit.wait()
+            try Data("one".utf8).write(to: temporaryURL)
+            return temporaryURL
+        }
+
+        var firstGalleryObserver: DownloadBatch? = batch
+        XCTAssertTrue(batch.start(assets: [asset], destination: paths.destination))
+        XCTAssertEqual(firstGalleryObserver?.phase, .running)
+        firstGalleryObserver = nil
+
+        let reopenedGalleryObserver = batch
+        XCTAssertEqual(reopenedGalleryObserver.phase, .running)
+        XCTAssertEqual(reopenedGalleryObserver.progress.totalCount, 1)
+        await permit.release()
+        await waitForBatch(reopenedGalleryObserver)
+
+        XCTAssertEqual(reopenedGalleryObserver.phase, .completed)
+        XCTAssertEqual(reopenedGalleryObserver.result?.successfulAssetIDs, [asset.id])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.destination
+            .appendingPathComponent("one.jpg").path))
+
+        reopenedGalleryObserver.consumeResult()
+        XCTAssertEqual(reopenedGalleryObserver.phase, .idle)
+        XCTAssertNil(reopenedGalleryObserver.result)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.destination
+            .appendingPathComponent("one.jpg").path))
+    }
+
     func testRunningBatchRejectsSecondStartAndRetainedResultNeedsConsumption() async throws {
         let paths = try makeDestination()
         defer { try? FileManager.default.removeItem(at: paths.root) }
