@@ -60,11 +60,19 @@ struct GalleryView: View {
             }
 
             if let index = selectedIndex {
-                AssetDetailView(model: model,
-                                loader: loader,
-                                index: index,
-                                onNavigate: { selectedIndex = $0 },
-                                onClose: { selectedIndex = nil })
+                AssetDetailView(
+                    model: model,
+                    loader: loader,
+                    index: index,
+                    canDownload: operationsIdle && !actionPending,
+                    showDelete: deletionBatch.allowDeletions,
+                    canDelete: operationsIdle && deletionBatch.canDelete && !actionPending,
+                    deletePermissionMissing: deletionBatch.permission == .missing,
+                    onNavigate: { selectedIndex = $0 },
+                    onDownload: { chooseDestinationAndStart(assets: [$0]) },
+                    onDelete: { confirmDeletion(assets: [$0]) },
+                    onClose: { selectedIndex = nil }
+                )
             }
         }
         .frame(minWidth: 640, minHeight: 480)
@@ -209,7 +217,7 @@ struct GalleryView: View {
     private var selectionActions: some View {
         HStack(spacing: 8) {
             Button {
-                chooseDestinationAndStart()
+                chooseDestinationAndStart(assets: model.selectedAssets)
             } label: {
                 Image(systemName: "arrow.down.circle")
             }
@@ -292,11 +300,13 @@ struct GalleryView: View {
     @ViewBuilder
     private var downloadResultBanner: some View {
         if let result = downloadBatch.result {
+            ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 Text(result.isFullSuccess
                      ? "Download complete"
                      : result.cancelled ? "Download cancelled" : "Download finished")
                     .font(.headline)
+                    .padding(.trailing, 28)
                 Text(resultSummary(result))
                 if !result.failures.isEmpty {
                     resultSection(title: "Failed Assets") {
@@ -312,23 +322,33 @@ struct GalleryView: View {
                         }
                     }
                 }
-                HStack {
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([result.destination])
-                    } label: {
-                        Label("Show in Finder", systemImage: "folder")
-                    }
-                    Button("Dismiss") {
-                        restoreRetryableSelection()
-                        downloadBatch.consumeResult()
-                    }
-                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
+            }
+            .frame(maxHeight: 360)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: 620, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 8)
+            .overlay(alignment: .topTrailing) {
+                Button(action: dismissDownloadResult) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss download result")
+                .help("Dismiss download result")
+                .padding(14)
+            }
             .padding(12)
+            .task {
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                    try Task.checkCancellation()
+                    guard downloadBatch.result == result else { return }
+                    dismissDownloadResult()
+                } catch {}
+            }
         }
     }
 
@@ -340,6 +360,7 @@ struct GalleryView: View {
                 Text(result.isFullSuccess ? "Deletion complete"
                      : result.stopped ? "Deletion stopped" : "Deletion finished")
                     .font(.headline)
+                    .padding(.trailing, 28)
                 Text("\(result.successfulAssetIDs.count) deleted, \(result.failures.count) failed, \(result.unfinished.count) not attempted, \(result.uncertain.count) uncertain.")
                 if let message = result.message {
                     Text(message).font(.callout)
@@ -379,7 +400,6 @@ struct GalleryView: View {
                     Text("Failed and not-attempted Assets stay selected as their pages load. Load them all to retry this result, or dismiss it to act on a smaller selection. Retry always asks for a new confirmation.")
                         .font(.caption)
                 }
-                HStack {
                     if deletionBatch.allowDeletions,
                        deletionBatch.batchConnectionID == model.connectionID,
                        !result.retryableAssetIDs.isEmpty {
@@ -392,22 +412,48 @@ struct GalleryView: View {
                                   || downloadBatch.phase != .idle
                                   || deletionBatch.permission == .missing)
                     }
-                    Button("Dismiss") {
-                        guard !actionPending else { return }
-                        restoreRetryableSelection()
-                        deletionBatch.consumeResult()
-                    }
-                    .disabled(actionPending)
-                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
             }
-            .frame(maxHeight: result.isFullSuccess ? 160 : 360)
+            .frame(maxHeight: 360)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: 620, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 8)
+            .overlay(alignment: .topTrailing) {
+                Button(action: dismissDeletionResult) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .disabled(actionPending)
+                .accessibilityLabel("Dismiss deletion result")
+                .help("Dismiss deletion result")
+                .padding(14)
+            }
             .padding(12)
+            .task(id: actionPending) {
+                // Keep the retained result alive while a retry confirmation is open.
+                guard !actionPending else { return }
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                    try Task.checkCancellation()
+                    guard deletionBatch.result == result else { return }
+                    dismissDeletionResult()
+                } catch {}
+            }
         }
+    }
+
+    private func dismissDownloadResult() {
+        restoreRetryableSelection()
+        downloadBatch.consumeResult()
+    }
+
+    private func dismissDeletionResult() {
+        guard !actionPending else { return }
+        restoreRetryableSelection()
+        deletionBatch.consumeResult()
     }
 
     private func resultSummary(_ result: DownloadBatch.BatchResult) -> String {
@@ -473,18 +519,19 @@ struct GalleryView: View {
         }
     }
 
-    private func chooseDestinationAndStart() {
-        guard operationsIdle, !actionPending, !model.selectedAssets.isEmpty,
+    private func chooseDestinationAndStart(assets: [ImmichAsset]) {
+        guard operationsIdle, !actionPending, !assets.isEmpty,
               let connectionID = model.connectionID,
               connectionID == ImmichClient()?.connectionID else { return }
-        let assets = model.selectedAssets
         actionPending = true
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Download"
-        panel.message = "Choose a destination folder for the selected Assets."
+        panel.message = assets.count == 1
+            ? "Choose a destination folder for this Asset."
+            : "Choose a destination folder for the selected Assets."
         panel.begin { response in
             let destination = response == .OK ? panel.url : nil
             Task { @MainActor in

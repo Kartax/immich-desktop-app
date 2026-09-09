@@ -1,6 +1,8 @@
 import SwiftUI
 import AVKit
 
+/// Hosts per-Asset Download/Delete actions for the item on screen, using the
+/// same batch lifecycle and gating as the grid's selection actions.
 /// Full-window enlarged view over the gallery grid. Photos load the larger
 /// `preview` rendition (grid thumb as instant placeholder); videos stream via
 /// AVPlayer, falling back to downloading the original if streaming fails.
@@ -8,7 +10,13 @@ struct AssetDetailView: View {
     let model: GalleryViewModel
     let loader: ThumbnailLoader
     let index: Int
+    let canDownload: Bool
+    let showDelete: Bool
+    let canDelete: Bool
+    let deletePermissionMissing: Bool
     let onNavigate: (Int) -> Void
+    let onDownload: (ImmichAsset) -> Void
+    let onDelete: (ImmichAsset) -> Void
     let onClose: () -> Void
 
     @State private var image: NSImage?
@@ -40,6 +48,9 @@ struct AssetDetailView: View {
             .keyboardShortcut(.cancelAction)
             .padding(12)
         }
+        .overlay(alignment: .topTrailing) {
+            detailActions
+        }
         .overlay(alignment: .bottom) {
             Text(asset.originalFileName)
                 .font(.caption)
@@ -56,6 +67,7 @@ struct AssetDetailView: View {
         .onKeyPress(.rightArrow) { navigate(1); return .handled }
         .onExitCommand { onClose() }
         .onAppear { focused = true }
+
         .task(id: asset.id) { await load() }
         .onDisappear { stopPlayback() }
     }
@@ -74,6 +86,42 @@ struct AssetDetailView: View {
             ProgressView()
         }
     }
+    private var detailActions: some View {
+        HStack(spacing: 8) {
+            Button {
+                onDownload(asset)
+            } label: {
+                Image(systemName: "arrow.down.circle")
+            }
+            .buttonStyle(.plain)
+            .disabled(!canDownload)
+            .accessibilityLabel("Download \(asset.originalFileName)")
+            .help("Download this Asset")
+
+            if showDelete {
+                Button {
+                    onDelete(asset)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .disabled(!canDelete)
+                .accessibilityLabel("Delete \(asset.originalFileName)")
+                .help(deletePermissionMissing
+                      ? "Delete is disabled: this API key needs asset.delete permission. See Settings."
+                      : "Delete this Asset from the Immich library")
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.55),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 5, y: 2)
+        .fixedSize()
+        .padding(12)
+    }
+
 
     private func navigate(_ delta: Int) {
         let target = index + delta

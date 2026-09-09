@@ -35,8 +35,8 @@ library after you enable **Allow deletions** in Settings.
   from the server), and jump straight to any year/month. Only what's on screen is
   fetched, so it stays fast on huge libraries.
 - Select one or more gallery Assets to **Download** their originals to a folder,
-  or **Delete** them from the Immich library when deletion is enabled. Both actions
-  require you to acknowledge their result before starting another operation.
+  or **Delete** them from the Immich library when deletion is enabled. Result banners
+  disappear after five seconds, or immediately using the **×** at the top right.
 
 ## Finder structure
 
@@ -80,8 +80,10 @@ the desktop app has no Undo or trash browser.
 Deletion continues if you close the gallery. **Stop** lets the current request
 finish and leaves the remaining Assets unattempted; it does not restore completed
 deletions. Results distinguish deleted, failed, not-attempted, and uncertain Assets.
-Dismiss the result before starting another download or deletion. Failed and
-not-attempted Assets can be selected again, but every retry requires confirmation.
+The result disappears after five seconds, or you can close it with **×** before
+starting another download or deletion. Failed and not-attempted Assets can be
+selected again, but every retry requires confirmation. Automatic dismissal pauses
+while a retry confirmation is open.
 If a response is lost or the app is interrupted, uncertain deletions are never
 automatically replayed. Check Immich if the app cannot establish the outcome.
 
