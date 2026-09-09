@@ -1,4 +1,5 @@
 import FileProvider
+import OSLog
 
 /// Manages the lifecycle of the Immich File Provider domain.
 enum DomainManager {
@@ -127,6 +128,22 @@ enum DomainManager {
     static func signalRoot() async {
         guard let manager = NSFileProviderManager(for: domain) else { return }
         try? await manager.signalEnumerator(for: .rootContainer)
+    }
+
+    /// Wakes the extension's durable deletion reconciler. It signals every known
+    /// container after committing per-occurrence working-set deletions; the app
+    /// never edits extension metadata or resets/removes the domain.
+    static func signalDeletionChanges() async {
+        guard let manager = NSFileProviderManager(for: domain) else { return }
+        let containers: [NSFileProviderItemIdentifier] = [.workingSet, .rootContainer]
+        for container in containers {
+            do {
+                try await manager.signalEnumerator(for: container)
+            } catch {
+                Logger(subsystem: AppConfig.domainIdentifier, category: "Deletion")
+                    .error("Finder deletion wake remains pending: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     /// Returns the Finder-visible location of the Immich domain root.

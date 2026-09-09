@@ -11,7 +11,8 @@ you to attach a file). Albums and a date-based timeline appear as folders; the
 original files are downloaded **on demand**, only when you actually open or select
 them.
 
-Read-only: the app never modifies anything on the server.
+Finder is read-only. The gallery can optionally delete Assets from your Immich
+library after you enable **Allow deletions** in Settings.
 
 **Download & info:** https://kartax.github.io/immich-desktop-app/ — a notarized
 `.dmg` for macOS 14+. This repo holds everything: the source, the download page
@@ -33,6 +34,9 @@ Read-only: the app never modifies anything on the server.
   timeline newest-first, click any photo or video to view it large (videos stream
   from the server), and jump straight to any year/month. Only what's on screen is
   fetched, so it stays fast on huge libraries.
+- Select one or more gallery Assets to **Download** their originals to a folder,
+  or **Delete** them from the Immich library when deletion is enabled. Both actions
+  require you to acknowledge their result before starting another operation.
 
 ## Finder structure
 
@@ -58,6 +62,34 @@ The optional bracketed levels follow the grouping mode selected independently fo
 Albums, Persons, and Places. Assets without a usable date appear directly inside a
 single **Unknown Date** folder when grouping is active.
 
+### Deleting Assets from the gallery
+
+**Allow deletions** is off by default, including after an upgrade. Enable it in
+Settings and grant the API key the optional **`asset.delete`** permission. Changing
+the server or API key turns the setting off again. Browsing and downloading do not
+require deletion permission.
+
+Select Assets using the gallery's selection controls, then choose **Delete**.
+Confirm the selection before any request is sent. Deletion affects the underlying
+Asset throughout the Immich library, including its appearances in albums; it is
+not just removal from the current view. The app uses normal deletion, not forced
+permanent deletion. Trash retention is controlled by your server: if trash is
+disabled, deletion can be permanent. Restore through Immich where available;
+the desktop app has no Undo or trash browser.
+
+Deletion continues if you close the gallery. **Stop** lets the current request
+finish and leaves the remaining Assets unattempted; it does not restore completed
+deletions. Results distinguish deleted, failed, not-attempted, and uncertain Assets.
+Dismiss the result before starting another download or deletion. Failed and
+not-attempted Assets can be selected again, but every retry requires confirmation.
+If a response is lost or the app is interrupted, uncertain deletions are never
+automatically replayed. Check Immich if the app cannot establish the outcome.
+
+Finder remains read-only even when gallery deletion is enabled. Confirmed
+deletions are propagated to known Finder appearances, including grouped folders;
+Finder may take time to catch up while its extension is unavailable. Separately
+downloaded files are not deleted, and this is not secure erasure of local caches.
+
 ## Project layout
 
 | Path | Purpose |
@@ -80,6 +112,17 @@ which is unreliable for App Groups on macOS.
    permissions: `album.read`, `asset.read`, `asset.download`, `asset.view` — all four
    (`asset.view` gates the thumbnail endpoint, so grid previews need it) — plus
    `person.read` for the Persons view.
+   Optionally grant **`asset.delete`** for gallery deletion; no additional
+   key-management permission is required.
+
+The minimum supported Immich server version is **v1.135.0**. On servers that expose
+the current key's permissions, Settings shows whether `asset.delete` is missing
+and disables the Delete action when it is.
+
+Older supported servers, including v1.135.0, do not consistently enforce
+`asset.delete` on the deletion endpoint. Omitting that scope is therefore not a
+universal server-side read-only guarantee. **Allow deletions** controls this app's
+gallery action; it does not change what the API key can do in other clients.
 
 ## Build & run
 
@@ -144,6 +187,11 @@ xcodebuild -project ImmichDesktop.xcodeproj -scheme ImmichDesktop \
 
 ## Known limitations
 
-- No change tracking (sync anchors): newly added or deleted assets appear only after
-  the folder is re-enumerated.
-- Read-only — uploads back to Immich are not supported.
+- Finder is read-only: uploads, renames, moves, and deletions through Finder are
+  not supported.
+- Gallery-initiated deletions are reconciled with Finder. Changes made through
+  other Immich clients are not continuously synchronized and may require folder
+  re-enumeration.
+- Trash retention and permissions depend on the Immich server. Gallery deletion
+  does not guarantee a recovery period or removal of an external-library original
+  from its underlying storage.

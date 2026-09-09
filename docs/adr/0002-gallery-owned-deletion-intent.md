@@ -1,0 +1,3 @@
+# Keep deletion intent in the gallery, not Finder
+
+Gallery deletion is an explicit, default-off capability with a confirmation for each fixed Asset selection; Finder remains read-only even when the API key permits server mutations. Deletion batches belong to the menu-bar app, like Download batches, and survive gallery closure, but interrupted or uncertain deletion requests are reconciled rather than automatically replayed because losing a response does not establish whether the server changed. Confirmed deletions have a durable handoff to the File Provider so every known virtual appearance can converge without rebuilding the domain or conflating successful server deletion with Finder's availability.

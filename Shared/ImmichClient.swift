@@ -1,9 +1,10 @@
 import Foundation
+import CryptoKit
 import os
 
 let fpLog = Logger(subsystem: "org.kartax.ImmichDesktop", category: "fileprovider")
 
-/// Lightweight client for the Immich REST API (read-only).
+/// Lightweight client for the Immich REST API. Mutations are app-owned and opt-in.
 struct ImmichClient {
     struct AssetPage {
         let assets: [ImmichAsset]
@@ -14,8 +15,28 @@ struct ImmichClient {
     let baseURL: URL      // ends with .../api
     let apiKey: String
     let configurationVersion: Int
+    private let session: URLSession
 
-    init?(serverURL: String, apiKey: String, configurationVersion: Int = 0) {
+    /// A credential-scoped, non-secret journal/cache namespace; never store the key.
+    let connectionID: String
+
+    private static func fingerprint(baseURL: URL, apiKey: String) -> String {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        let scheme = components?.scheme?.lowercased()
+        let host = components?.host?.lowercased()
+        components?.scheme = scheme
+        components?.host = host
+        if (components?.scheme == "https" && components?.port == 443)
+            || (components?.scheme == "http" && components?.port == 80) {
+            components?.port = nil
+        }
+        let normalized = components?.string ?? baseURL.absoluteString
+        return SHA256.hash(data: Data((normalized + "\u{0}" + apiKey).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    init?(serverURL: String, apiKey: String, configurationVersion: Int = 0,
+          session: URLSession = .shared) {
         var s = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while s.hasSuffix("/") { s.removeLast() }
         if !s.hasSuffix("/api") { s += "/api" }
@@ -23,6 +44,8 @@ struct ImmichClient {
         self.baseURL = url
         self.apiKey = apiKey
         self.configurationVersion = configurationVersion
+        self.session = session
+        self.connectionID = Self.fingerprint(baseURL: url, apiKey: apiKey)
     }
 
     /// Initializes from the shared App Group configuration.
@@ -80,6 +103,141 @@ struct ImmichClient {
 
     func asset(id: String) async throws -> ImmichAsset {
         let (data, _) = try await URLSession.shared.data(for: request("assets/\(id)"))
+        return try JSONDecoder().decode(ImmichAsset.self, from: data)
+    }
+
+    enum DeletionPermission: Equatable, Sendable {
+        case allowed
+        case missing
+        case unknown(String)
+    }
+
+    enum TrashPolicy: Equatable, Sendable {
+        case enabled(days: Int?)
+        case disabled
+        case unknown
+    }
+
+    enum DeletionError: Error, LocalizedError, Equatable, Sendable {
+        case rejected(statusCode: Int)
+        case authentication(statusCode: Int)
+        case uncertain(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .rejected(let code):
+                return "Immich rejected this Asset (HTTP \(code)). It may be unavailable or not owned by you."
+            case .authentication(let code):
+                return "Immich rejected the API key or its deletion permission (HTTP \(code)). No further requests were sent."
+            case .uncertain(let message):
+                return message
+            }
+        }
+    }
+
+    enum AssetDeletionState: Equatable, Sendable {
+        case active
+        case deleted
+        case unknown(String)
+    }
+
+    func deletionPermission() async -> DeletionPermission {
+        struct Key: Decodable { let permissions: [String] }
+        do {
+            let (data, response) = try await session.data(for: request("api-keys/me"))
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                return .unknown("This server cannot report this key's permissions. Verify deletion access in Immich before opting in.")
+            }
+            let key = try JSONDecoder().decode(Key.self, from: data)
+            return key.permissions.contains("asset.delete") || key.permissions.contains("all")
+                ? .allowed : .missing
+        } catch {
+            return .unknown("The API key's permissions could not be checked. Verify deletion access in Immich before opting in.")
+        }
+    }
+
+    func trashPolicy() async -> TrashPolicy {
+        struct Features: Decodable { let trash: Bool }
+        struct Config: Decodable { let trashDays: Int? }
+        do {
+            var featuresRequest = request("server/features")
+            featuresRequest.setValue(nil, forHTTPHeaderField: "x-api-key")
+            let (data, response) = try await session.data(for: featuresRequest)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .unknown }
+            guard try JSONDecoder().decode(Features.self, from: data).trash else { return .disabled }
+            var configRequest = request("server/config")
+            configRequest.setValue(nil, forHTTPHeaderField: "x-api-key")
+            guard let (configData, configResponse) = try? await session.data(for: configRequest),
+                  (configResponse as? HTTPURLResponse)?.statusCode == 200,
+                  let config = try? JSONDecoder().decode(Config.self, from: configData) else {
+                return .enabled(days: nil)
+            }
+            return .enabled(days: config.trashDays.flatMap { $0 >= 0 ? $0 : nil })
+        } catch {
+            return .unknown
+        }
+    }
+
+    /// Exactly one Asset per request. A non-204 response is never treated as success.
+    func deleteAsset(id: String) async throws {
+        struct Body: Encodable { let ids: [String]; let force = false }
+        var req = request("assets")
+        req.httpMethod = "DELETE"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(Body(ids: [id]))
+        let response: URLResponse
+        do {
+            (_, response) = try await session.data(for: req)
+        } catch {
+            // Timeouts, cancellation and transport errors can occur after mutation.
+            throw DeletionError.uncertain("The connection ended without a confirmed outcome. Check this Asset in Immich; it will not be retried automatically.")
+        }
+        guard let code = (response as? HTTPURLResponse)?.statusCode else {
+            throw DeletionError.uncertain("Immich returned an unrecognized response. Check this Asset in Immich.")
+        }
+        switch code {
+        case 204: return
+        case 401, 403: throw DeletionError.authentication(statusCode: code)
+        // Immich's DTO/access guard rejects 400 before mutation. Other responses,
+        // including unexpected 2xx and server/proxy failures, remain ambiguous.
+        case 400:
+            throw DeletionError.rejected(statusCode: code)
+        default:
+            throw DeletionError.uncertain("Immich returned HTTP \(code) without confirming deletion. Check this Asset in Immich; it will not be retried automatically.")
+        }
+    }
+
+    private struct AssetState: Decodable {
+        let isTrashed: Bool?
+        let status: String?
+
+        var deletionState: AssetDeletionState {
+            if isTrashed == true || status == "trashed" || status == "deleted" { return .deleted }
+            if status == "active" || (status == nil && isTrashed == false) { return .active }
+            return .unknown("Immich did not provide an unambiguous Asset state. Check the Asset in Immich.")
+        }
+    }
+
+    /// A missing/inaccessible Asset is not proof of deletion: access may have changed.
+    func deletionState(id: String) async -> AssetDeletionState {
+        do {
+            let (data, response) = try await session.data(for: request("assets/\(id)"))
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                return .unknown("The Asset's state could not be read. Check the Asset and Trash in Immich.")
+            }
+            return try JSONDecoder().decode(AssetState.self, from: data).deletionState
+        } catch {
+            return .unknown("The Asset's state could not be read. Check the Asset and Trash in Immich.")
+        }
+    }
+
+    /// Used by Finder to recognize later restores without serving trashed content.
+    func activeAsset(id: String) async throws -> ImmichAsset {
+        let (data, response) = try await session.data(for: request("assets/\(id)"))
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              try JSONDecoder().decode(AssetState.self, from: data).deletionState == .active else {
+            throw URLError(.resourceUnavailable)
+        }
         return try JSONDecoder().decode(ImmichAsset.self, from: data)
     }
 
@@ -226,6 +384,7 @@ struct ImmichClient {
         body["order"] = "desc"
         body["size"] = size
         body["page"] = page
+        body["withDeleted"] = false
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let startedAt = Date()

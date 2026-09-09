@@ -5,13 +5,21 @@ import AppKit
 /// sections, plus an in-window enlarged view (`AssetDetailView`) on click.
 struct GalleryView: View {
     let downloadBatch: DownloadBatch
+    let deletionBatch: DeletionBatch
+    let canStartOperation: () -> Bool
 
     @State private var model: GalleryViewModel
     @State private var loader = ThumbnailLoader()
     @State private var selectedIndex: Int?
+    @State private var actionPending = false
+    @State private var isVisible = false
+    @State private var appliedDeletionIDs = Set<String>()
 
-    init(downloadBatch: DownloadBatch) {
+    init(downloadBatch: DownloadBatch, deletionBatch: DeletionBatch,
+         canStartOperation: @escaping () -> Bool) {
         self.downloadBatch = downloadBatch
+        self.deletionBatch = deletionBatch
+        self.canStartOperation = canStartOperation
         _model = State(initialValue: GalleryViewModel())
     }
 
@@ -66,9 +74,34 @@ struct GalleryView: View {
             galleryControls
         }
         .overlay(alignment: .bottom) {
-            downloadResultBanner
+            VStack(spacing: 0) {
+                downloadResultBanner
+                deletionResultBanner
+            }
         }
-        .task { await loadInitialGallery() }
+        .task {
+            isVisible = true
+            await deletionBatch.refreshCapabilities()
+            await loadInitialGallery()
+        }
+        .onDisappear { isVisible = false }
+        .onChange(of: deletionBatch.connectionID) { _, _ in
+            guard model.connectionID != deletionBatch.connectionID else { return }
+            selectedIndex = nil
+            loader = ThumbnailLoader()
+            appliedDeletionIDs = []
+            Task { await loadInitialGallery() }
+        }
+        .onChange(of: deletionBatch.successfulAssetIDs) { _, _ in
+            applyConfirmedDeletions()
+        }
+        .onChange(of: deletionBatch.result) { _, _ in
+            applyConfirmedDeletions()
+            restoreRetryableSelection()
+        }
+        .onChange(of: operationRunning) { _, running in
+            model.setPagingSuspended(running)
+        }
         .onChange(of: downloadBatch.successfulAssetIDs) { _, completedIDs in
             model.removeSelectedAssets(completedIDs)
         }
@@ -90,8 +123,9 @@ struct GalleryView: View {
                                     asset: asset,
                                     loader: loader,
                                     isSelected: model.isSelected(asset.id),
-                                    selectionDisabled: downloadBatch.phase == .running,
+                                    selectionDisabled: operationRunning || actionPending,
                                     onToggleSelection: { withShift in
+                                        guard !operationRunning, !actionPending else { return }
                                         model.toggleSelection(of: asset.id, withShift: withShift)
                                     },
                                     onOpen: {
@@ -116,10 +150,10 @@ struct GalleryView: View {
 
     private var galleryControls: some View {
         HStack(spacing: 8) {
-            if model.selectionCount > 0 || downloadBatch.phase == .running {
+            if model.selectionCount > 0 || operationRunning {
                 selectionBar
             }
-            if model.selectionCount > 0 && downloadBatch.phase != .running {
+            if model.selectionCount > 0 && !operationRunning {
                 selectionActions
             }
             if case .loaded = model.phase, !model.yearGroups.isEmpty {
@@ -142,15 +176,22 @@ struct GalleryView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cancel Download")
                 .help("Cancel Download")
+            } else if deletionBatch.phase == .running {
+                Text("Deleting \(deletionBatch.progress.completedCount) of \(deletionBatch.progress.totalCount)")
+                    .monospacedDigit()
+                Button("Stop") { deletionBatch.stop() }
+                    .buttonStyle(.plain)
+                    .help("Stop after the current request finishes")
             } else {
                 Text(selectionText)
                 Button {
+                    guard !operationRunning, !actionPending else { return }
                     model.clearSelection()
                 } label: {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.plain)
-                .disabled(downloadBatch.phase == .running)
+                .disabled(operationRunning || actionPending)
                 .accessibilityLabel("Clear Asset selection")
                 .help("Clear selection")
             }
@@ -173,9 +214,22 @@ struct GalleryView: View {
                 Image(systemName: "arrow.down.circle")
             }
             .buttonStyle(.plain)
-            .disabled(downloadBatch.phase != .idle)
+            .disabled(!operationsIdle || actionPending)
             .accessibilityLabel("Download selected Assets")
             .help("Download selected Assets")
+            if deletionBatch.allowDeletions {
+                Button {
+                    confirmDeletion(assets: model.selectedAssets)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .disabled(!operationsIdle || !deletionBatch.canDelete || actionPending)
+                .accessibilityLabel("Delete selected Assets")
+                .help(deletionBatch.permission == .missing
+                      ? "Delete is disabled: this API key needs asset.delete permission. See Settings."
+                      : "Delete selected Assets from the Immich library")
+            }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 10)
@@ -197,6 +251,14 @@ struct GalleryView: View {
             ? progress.completedCount
             : min(progress.completedCount + 1, progress.totalCount)
         return "Downloading \(current) of \(progress.totalCount)"
+    }
+
+    private var operationRunning: Bool {
+        downloadBatch.phase == .running || deletionBatch.phase == .running
+    }
+
+    private var operationsIdle: Bool {
+        canStartOperation() && downloadBatch.phase == .idle && deletionBatch.phase == .idle
     }
 
     /// Year → month menu that re-anchors the timeline (no intervening pages are
@@ -224,7 +286,7 @@ struct GalleryView: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(downloadBatch.phase == .running)
+        .disabled(operationRunning || actionPending)
     }
 
     @ViewBuilder
@@ -270,6 +332,84 @@ struct GalleryView: View {
         }
     }
 
+    @ViewBuilder
+    private var deletionResultBanner: some View {
+        if let result = deletionBatch.result {
+            ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(result.isFullSuccess ? "Deletion complete"
+                     : result.stopped ? "Deletion stopped" : "Deletion finished")
+                    .font(.headline)
+                Text("\(result.successfulAssetIDs.count) deleted, \(result.failures.count) failed, \(result.unfinished.count) not attempted, \(result.uncertain.count) uncertain.")
+                if let message = result.message {
+                    Text(message).font(.callout)
+                }
+                if !result.successfulAssetIDs.isEmpty {
+                    Text("Server deletion is confirmed. Finder updates may still be pending; downloaded copies are not removed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if !result.failures.isEmpty {
+                    resultSection(title: "Failed Assets (retained for retry)") {
+                        ForEach(result.failures) { failure in
+                            Text("\(failure.originalFileName): \(failure.message)")
+                        }
+                    }
+                }
+                if !result.unfinished.isEmpty {
+                    resultSection(title: "Not attempted (retained for retry)") {
+                        ForEach(result.unfinished) { asset in
+                            Text(asset.originalFileName)
+                        }
+                    }
+                }
+                if !result.uncertain.isEmpty {
+                    resultSection(title: "Uncertain outcomes — check Immich before trying again") {
+                        ForEach(result.uncertain) { failure in
+                            Text("\(failure.originalFileName): \(failure.message)")
+                        }
+                    }
+                    Text("These Assets are not selected for retry. The server may already have deleted them.")
+                        .font(.caption)
+                }
+                if deletionBatch.batchConnectionID != model.connectionID {
+                    Text("This result belongs to another server or API key. Reconnect to that connection to retry.")
+                        .font(.caption)
+                } else if !result.retryableAssetIDs.isEmpty {
+                    Text("Failed and not-attempted Assets stay selected as their pages load. Load them all to retry this result, or dismiss it to act on a smaller selection. Retry always asks for a new confirmation.")
+                        .font(.caption)
+                }
+                HStack {
+                    if deletionBatch.allowDeletions,
+                       deletionBatch.batchConnectionID == model.connectionID,
+                       !result.retryableAssetIDs.isEmpty {
+                        let retryIDs = Set(result.retryableAssetIDs)
+                        let retryAssets = model.assets.filter { retryIDs.contains($0.id) }
+                        Button("Retry \(retryIDs.count) Assets…") {
+                            confirmDeletion(assets: retryAssets, retrying: true)
+                        }
+                        .disabled(retryAssets.count != retryIDs.count || actionPending || operationRunning
+                                  || downloadBatch.phase != .idle
+                                  || deletionBatch.permission == .missing)
+                    }
+                    Button("Dismiss") {
+                        guard !actionPending else { return }
+                        restoreRetryableSelection()
+                        deletionBatch.consumeResult()
+                    }
+                    .disabled(actionPending)
+                }
+            }
+            .padding(14)
+            }
+            .frame(maxHeight: result.isFullSuccess ? 160 : 360)
+            .frame(maxWidth: 620, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .shadow(radius: 8)
+            .padding(12)
+        }
+    }
+
     private func resultSummary(_ result: DownloadBatch.BatchResult) -> String {
         var parts = ["\(result.completedCount) completed"]
         if result.failureCount > 0 {
@@ -298,44 +438,135 @@ struct GalleryView: View {
     }
 
     private func jump(toMonth month: String?) {
-        guard downloadBatch.phase != .running else { return }
+        guard !operationRunning, !actionPending else { return }
         // A timeline reset replaces the loaded ordering, so detail must close
         // before the old index can become invalid.
         selectedIndex = nil
-        Task { await model.jump(toMonth: month) }
+        Task {
+            await model.jump(toMonth: month)
+            restoreRetryableSelection()
+        }
     }
 
     private func loadInitialGallery() async {
+        // A new server snapshot is authoritative for older confirmed deletions:
+        // an Asset restored in Immich must be allowed to appear again.
+        appliedDeletionIDs = deletionBatch.batchConnectionID == ImmichClient()?.connectionID
+            ? Set(deletionBatch.successfulAssetIDs) : []
+        model.setPagingSuspended(operationRunning)
         await model.initialLoad()
+        applyConfirmedDeletions()
         restoreRetryableSelection()
+        if !operationRunning { model.setPagingSuspended(false) }
     }
 
     private func restoreRetryableSelection() {
-        guard downloadBatch.phase == .completed,
-              let result = downloadBatch.result else { return }
-        model.removeSelectedAssets(result.successfulAssetIDs)
-        model.restoreSelection(for: result.retryableAssetIDs)
+        if downloadBatch.phase == .completed, let result = downloadBatch.result {
+            model.removeSelectedAssets(result.successfulAssetIDs)
+            model.restoreSelection(for: result.retryableAssetIDs)
+        }
+        if deletionBatch.phase == .completed,
+           deletionBatch.batchConnectionID == model.connectionID,
+           let result = deletionBatch.result {
+            model.removeSelectedAssets(result.successfulAssetIDs + result.uncertain.map(\.assetID))
+            model.restoreSelection(for: result.retryableAssetIDs)
+        }
     }
 
     private func chooseDestinationAndStart() {
-        guard downloadBatch.phase == .idle, !model.selectedAssets.isEmpty else { return }
-
+        guard operationsIdle, !actionPending, !model.selectedAssets.isEmpty,
+              let connectionID = model.connectionID,
+              connectionID == ImmichClient()?.connectionID else { return }
+        let assets = model.selectedAssets
+        actionPending = true
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Download"
         panel.message = "Choose a destination folder for the selected Assets."
-        let galleryModel = model
-        let batch = downloadBatch
         panel.begin { response in
             let destination = response == .OK ? panel.url : nil
             Task { @MainActor in
-                guard let destination else { return }
-                let assets = galleryModel.selectedAssets
-                guard !assets.isEmpty else { return }
-                _ = batch.start(assets: assets, destination: destination)
+                actionPending = false
+                guard isVisible, operationsIdle,
+                      connectionID == ImmichClient()?.connectionID,
+                      let destination else { return }
+                _ = downloadBatch.start(assets: assets, destination: destination)
             }
+        }
+    }
+
+    private func applyConfirmedDeletions() {
+        guard model.connectionID == deletionBatch.batchConnectionID else { return }
+        let newIDs = deletionBatch.successfulAssetIDs.filter {
+            !appliedDeletionIDs.contains($0)
+        }
+        guard !newIDs.isEmpty else { return }
+        // Detail navigation uses indices, so close before mutating the ordering.
+        selectedIndex = nil
+        loader.invalidate(assetIDs: newIDs)
+        appliedDeletionIDs.formUnion(newIDs)
+        model.removeConfirmedAssets(newIDs)
+        if !operationRunning { model.setPagingSuspended(false) }
+    }
+
+    private func confirmDeletion(assets: [ImmichAsset], retrying: Bool = false) {
+        guard canStartOperation(), !assets.isEmpty, !actionPending, !operationRunning,
+              downloadBatch.phase == .idle,
+              deletionBatch.allowDeletions, deletionBatch.permission != .missing,
+              retrying ? deletionBatch.phase == .completed : deletionBatch.phase == .idle,
+              let connectionID = model.connectionID,
+              connectionID == ImmichClient()?.connectionID,
+              let window = NSApp.keyWindow else { return }
+        let retainedResult = deletionBatch.result
+        actionPending = true
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete \(assets.count) \(assets.count == 1 ? "Asset" : "Assets") from Immich?"
+        alert.informativeText = "This removes the selected Assets from your entire library and all albums, not just this gallery.\n\n\(trashWarning)\(permissionWarning)\n\nThere is no Undo in Immich Desktop."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete \(assets.count) \(assets.count == 1 ? "Asset" : "Assets")")
+            .hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { response in
+            Task { @MainActor in
+                actionPending = false
+                guard canStartOperation(), response == .alertSecondButtonReturn, isVisible,
+                      !operationRunning, downloadBatch.phase == .idle,
+                      deletionBatch.allowDeletions, deletionBatch.permission != .missing,
+                      connectionID == ImmichClient()?.connectionID,
+                      connectionID == model.connectionID else { return }
+                if retrying {
+                    guard deletionBatch.phase == .completed,
+                          deletionBatch.result == retainedResult,
+                          deletionBatch.batchConnectionID == connectionID else { return }
+                    deletionBatch.consumeResult()
+                }
+                guard operationsIdle else { return }
+                appliedDeletionIDs = []
+                _ = deletionBatch.start(assets: assets)
+            }
+        }
+    }
+
+    private var permissionWarning: String {
+        if case .unknown = deletionBatch.permission {
+            return "\n\nThe API key's deletion permission could not be verified. You explicitly enabled deletion attempts in Settings."
+        }
+        return ""
+    }
+
+    private var trashWarning: String {
+        switch deletionBatch.trashPolicy {
+        case .enabled(let days):
+            if let days {
+                return "Immich reports that trash is enabled with a \(days)-day retention period. The server controls recovery and may empty trash sooner."
+            }
+            return "Immich reports that trash is enabled. Retention and recovery are controlled by the server."
+        case .disabled:
+            return "Immich reports that trash is disabled. Deletion may be permanent."
+        case .unknown:
+            return "The server's trash policy could not be verified. Deletion may be permanent."
         }
     }
 

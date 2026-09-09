@@ -6,6 +6,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     let parentItemIdentifier: NSFileProviderItemIdentifier
     let filename: String
     let contentType: UTType
+    private(set) var assetMetadata: ImmichAsset?
     private let isFolder: Bool
     private let size: Int?
 
@@ -114,6 +115,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         self.init(identifier: ItemID.asset(asset.id, parent: parent), parent: parent,
                   filename: FileProviderItem.sanitize(asset.originalFileName),
                   contentType: type, isFolder: false, size: asset.exifInfo?.fileSizeInByte)
+        assetMetadata = asset
     }
 
     // MARK: NSFileProviderItem

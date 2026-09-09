@@ -1,13 +1,24 @@
 import FileProvider
 import Foundation
 
-/// Persistent metadata snapshots shared by folder enumeration, item lookup and
-/// change enumeration. Files live in the App Group container so a short-lived
-/// File Provider process can still answer warm requests without another API call.
+/// One atomic, connection-scoped transaction contains receipts, occurrences, cache
+/// generations and changes. A receipt is never committed ahead of its deletions.
 actor AssetMetadataCache {
-    static let shared = AssetMetadataCache()
+    private static let registryLock = NSLock()
+    private static var registry: [String: AssetMetadataCache] = [:]
 
-    struct CachedSnapshot {
+    static func shared(for client: ImmichClient) -> AssetMetadataCache {
+        registryLock.withLock {
+            let key = "\(client.connectionID):\(client.configurationVersion)"
+            if let cache = registry[key] { return cache }
+            let cache = AssetMetadataCache(connectionID: client.connectionID,
+                                           configurationVersion: client.configurationVersion)
+            registry[key] = cache
+            return cache
+        }
+    }
+
+    struct CachedSnapshot: Codable {
         let generation: String
         let createdAt: Date
         let assets: [ImmichAsset]
@@ -26,372 +37,405 @@ actor AssetMetadataCache {
         let anchorExpired: Bool
     }
 
-    private struct StoredSnapshot: Codable {
-        let schemaVersion: Int
-        let configurationVersion: Int
-        let containerRawValue: String
-        let generation: String
-        let createdAt: Date
-        var assets: [ImmichAsset]
+    private struct Occurrence: Codable {
+        let parent: String
+        let asset: ImmichAsset
     }
 
-    private struct StoredDraft: Codable {
-        let schemaVersion: Int
-        let configurationVersion: Int
-        let containerRawValue: String
-        let generation: String
-        var assets: [ImmichAsset]
-    }
-
-    private struct StoredChange: Codable {
+    private struct Change: Codable {
         let sequence: Int64
-        let parentRawValue: String
-        let updatedAsset: ImmichAsset?
-        let deletedIdentifierRawValue: String?
+        let parent: String
+        let asset: ImmichAsset?
+        let deleted: String?
     }
 
-    private struct StoredChangeState: Codable {
-        let schemaVersion: Int
-        let configurationVersion: Int
-        var lastSequence: Int64
-        var minimumAvailableSequence: Int64
-        var changes: [StoredChange]
+    private struct State: Codable {
+        var epoch = UUID().uuidString
+        var receipts: Set<UUID> = []
+        var deletedAssetIDs: Set<String> = []
+        var snapshots: [String: CachedSnapshot] = [:]
+        var drafts: [String: [ImmichAsset]] = [:]
+        var occurrences: [String: Occurrence] = [:]
+        var containers: Set<String> = []
+        var changes: [Change] = []
+        var sequence: Int64 = 0
+        var minimumSequence: Int64 = 1
+        var lastDeletionSequence: Int64 = 0
+        var pendingSignals: Set<String> = []
     }
 
-    private static let schemaVersion = 1
-    private static let maximumStoredChanges = 200_000
-    private static let retainedChangesAfterCompaction = 100_000
+    @TaskLocal private static var requestEpoch: String?
+    private let connectionID: String
+    private let configurationVersion: Int
+    private let directory: URL?
+    private let legacyDirectory: URL?
+    private let isCurrentConnection: @Sendable () -> Bool
+    private let signal: @Sendable (String) async throws -> Void
+    private let journal: DeletionJournal
+    private var state: State?
 
-    private let cacheDirectory: URL?
-    private var snapshots: [String: StoredSnapshot] = [:]
-    private var snapshotIndexes: [String: [String: ImmichAsset]] = [:]
-    private var drafts: [String: StoredDraft] = [:]
-    private var changeState: StoredChangeState?
-
-    private init() {
-        cacheDirectory = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: AppConfig.appGroup)?
-            .appendingPathComponent("file-provider-metadata-v1", isDirectory: true)
-        if let cacheDirectory {
-            try? FileManager.default.createDirectory(
-                at: cacheDirectory, withIntermediateDirectories: true)
+    /// Explicit storage and journal seams permit isolated crash/restart scenarios.
+    init(connectionID: String, configurationVersion: Int,
+         directory: URL? = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: AppConfig.appGroup),
+         journal: DeletionJournal = DeletionJournal(),
+         isCurrentConnection: (@Sendable () -> Bool)? = nil,
+         signal: (@Sendable (String) async throws -> Void)? = nil) {
+        self.connectionID = connectionID
+        self.configurationVersion = configurationVersion
+        self.directory = directory?.appendingPathComponent(
+            "file-provider-deletions-v2/\(connectionID)/\(configurationVersion)",
+            isDirectory: true)
+        self.legacyDirectory = directory?.appendingPathComponent("file-provider-metadata-v1", isDirectory: true)
+        self.isCurrentConnection = isCurrentConnection ?? {
+            guard let client = ImmichClient() else { return false }
+            return client.connectionID == connectionID && client.configurationVersion == configurationVersion
         }
-    }
-
-    func freshSnapshot(
-        for container: NSFileProviderItemIdentifier,
-        configurationVersion: Int,
-        maximumAge: TimeInterval
-    ) -> CachedSnapshot? {
-        guard let snapshot = loadSnapshot(
-            for: container.rawValue, configurationVersion: configurationVersion),
-              Date().timeIntervalSince(snapshot.createdAt) <= maximumAge else {
-            return nil
-        }
-        return CachedSnapshot(generation: snapshot.generation,
-                              createdAt: snapshot.createdAt,
-                              assets: snapshot.assets)
-    }
-
-    func snapshot(
-        for container: NSFileProviderItemIdentifier,
-        generation: String,
-        configurationVersion: Int
-    ) -> CachedSnapshot? {
-        guard let snapshot = loadSnapshot(
-            for: container.rawValue, configurationVersion: configurationVersion),
-              snapshot.generation == generation else {
-            return nil
-        }
-        return CachedSnapshot(generation: snapshot.generation,
-                              createdAt: snapshot.createdAt,
-                              assets: snapshot.assets)
-    }
-
-    func asset(
-        id: String,
-        parent: NSFileProviderItemIdentifier,
-        configurationVersion: Int
-    ) -> ImmichAsset? {
-        let key = parent.rawValue
-        guard loadSnapshot(for: key, configurationVersion: configurationVersion) != nil
-        else { return nil }
-        return snapshotIndexes[key]?[id]
-    }
-
-    /// Appends one server page to a generation-specific draft. A completed draft
-    /// atomically replaces the published snapshot and emits its metadata delta.
-    func append(
-        _ assets: [ImmichAsset],
-        pageNumber: Int,
-        finalPage: Bool,
-        for container: NSFileProviderItemIdentifier,
-        generation: String,
-        configurationVersion: Int
-    ) {
-        let key = draftKey(containerRawValue: container.rawValue, generation: generation)
-        var draft: StoredDraft
-
-        if pageNumber == 1 {
-            draft = StoredDraft(
-                schemaVersion: Self.schemaVersion,
-                configurationVersion: configurationVersion,
-                containerRawValue: container.rawValue,
-                generation: generation,
-                assets: [])
-        } else if let existing = drafts[key] ?? loadDraft(
-            containerRawValue: container.rawValue,
-            generation: generation,
-            configurationVersion: configurationVersion
-        ) {
-            draft = existing
-        } else {
-            fpLog.error(
-                "metadata cache: missing draft for \(container.rawValue, privacy: .public) generation \(generation, privacy: .public)"
-            )
-            return
-        }
-
-        var known = Set(draft.assets.map(\.id))
-        draft.assets.append(contentsOf: assets.filter { known.insert($0.id).inserted })
-        drafts[key] = draft
-        write(draft, to: draftURL(
-            containerRawValue: container.rawValue, generation: generation))
-
-        guard finalPage else { return }
-        publish(draft.assets, for: container, generation: generation,
-                configurationVersion: configurationVersion)
-        drafts.removeValue(forKey: key)
-        if let url = draftURL(containerRawValue: container.rawValue, generation: generation) {
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
-
-    /// Publishes a complete bounded snapshot, used for locally name-sorted folders.
-    func publish(
-        _ assets: [ImmichAsset],
-        for container: NSFileProviderItemIdentifier,
-        generation: String,
-        configurationVersion: Int,
-        emitChanges: Bool = true
-    ) {
-        let oldSnapshot = loadSnapshot(
-            for: container.rawValue, configurationVersion: configurationVersion)
-        let snapshot = StoredSnapshot(
-            schemaVersion: Self.schemaVersion,
-            configurationVersion: configurationVersion,
-            containerRawValue: container.rawValue,
-            generation: generation,
-            createdAt: Date(),
-            assets: assets)
-
-        if emitChanges {
-            recordChanges(from: oldSnapshot, to: snapshot)
-        }
-        snapshots[container.rawValue] = snapshot
-        snapshotIndexes[container.rawValue] = index(assets)
-        write(snapshot, to: snapshotURL(containerRawValue: container.rawValue))
-    }
-
-    func currentChangeSequence(configurationVersion: Int) -> Int64 {
-        loadChangeState(configurationVersion: configurationVersion).lastSequence
-    }
-
-    func changes(
-        after anchor: Int64,
-        for container: NSFileProviderItemIdentifier,
-        maximumCount: Int,
-        configurationVersion: Int
-    ) -> ChangeBatch {
-        let state = loadChangeState(configurationVersion: configurationVersion)
-        if anchor < state.minimumAvailableSequence - 1 || anchor > state.lastSequence {
-            return ChangeBatch(updates: [], deletedIdentifiers: [],
-                               anchor: state.lastSequence, moreComing: false,
-                               anchorExpired: true)
-        }
-
-        let isWorkingSet = container == .workingSet
-        let limit = max(1, maximumCount)
-        var selected: [StoredChange] = []
-
-        for change in state.changes where change.sequence > anchor {
-            guard isWorkingSet || change.parentRawValue == container.rawValue else { continue }
-            selected.append(change)
-            if selected.count == limit { break }
-        }
-
-        let lastSelectedSequence = selected.last?.sequence
-        let hasMoreRelevantChanges: Bool
-        if let lastSelectedSequence {
-            hasMoreRelevantChanges = state.changes.contains {
-                $0.sequence > lastSelectedSequence
-                    && (isWorkingSet || $0.parentRawValue == container.rawValue)
+        self.signal = signal ?? { raw in
+            let domain = NSFileProviderDomain(
+                identifier: NSFileProviderDomainIdentifier(rawValue: AppConfig.domainIdentifier),
+                displayName: AppConfig.domainDisplayName)
+            guard let manager = NSFileProviderManager(for: domain) else {
+                throw CocoaError(.fileNoSuchFile)
             }
-        } else {
-            hasMoreRelevantChanges = false
+            try await manager.signalEnumerator(for: NSFileProviderItemIdentifier(rawValue: raw))
         }
-        let returnedAnchor = hasMoreRelevantChanges
-            ? (lastSelectedSequence ?? anchor)
-            : state.lastSequence
-
-        let updates = selected.compactMap { change -> CachedUpdate? in
-            guard let asset = change.updatedAsset else { return nil }
-            return CachedUpdate(
-                parent: NSFileProviderItemIdentifier(rawValue: change.parentRawValue),
-                asset: asset)
-        }
-        let deleted = selected.compactMap {
-            $0.deletedIdentifierRawValue.map(NSFileProviderItemIdentifier.init(rawValue:))
-        }
-        return ChangeBatch(updates: updates, deletedIdentifiers: deleted,
-                           anchor: returnedAnchor, moreComing: hasMoreRelevantChanges,
-                           anchorExpired: false)
+        self.journal = journal
     }
 
-    private func loadSnapshot(
-        for containerRawValue: String,
-        configurationVersion: Int
-    ) -> StoredSnapshot? {
-        if let snapshot = snapshots[containerRawValue] {
-            return snapshot.configurationVersion == configurationVersion ? snapshot : nil
+    nonisolated func withRequest<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        try await signalPendingChanges()
+        let epoch = try await reconcile()
+        do {
+            let result = try await Self.$requestEpoch.withValue(epoch, operation: operation)
+            await flushSignalsAfterRequest()
+            return result
+        } catch {
+            await flushSignalsAfterRequest()
+            throw error
         }
-        guard let url = snapshotURL(containerRawValue: containerRawValue),
-              let data = try? Data(contentsOf: url),
-              let snapshot = try? JSONDecoder().decode(StoredSnapshot.self, from: data),
-              snapshot.schemaVersion == Self.schemaVersion,
-              snapshot.configurationVersion == configurationVersion,
-              snapshot.containerRawValue == containerRawValue else {
-            return nil
+    }
+
+    /// Callback data was already durably recorded. A later wake/receipt failure
+    /// must not invoke that callback twice; retain the pending work and log it.
+    private func flushSignalsAfterRequest() async {
+        guard state?.pendingSignals.isEmpty == false else { return }
+        do { try await signalPendingChanges() }
+        catch { fpLog.error("Finder deletion propagation remains pending: \(error.localizedDescription, privacy: .public)") }
+    }
+
+    /// Every entry point rereads the immutable app journal. Old network requests
+    /// fail rather than publishing a page (or local draft) across a deletion fence.
+    private func checkedState() throws -> State {
+        let epoch = try reconcile()
+        guard Self.requestEpoch == epoch else {
+            throw NSFileProviderError(.pageExpired)
         }
-        snapshots[containerRawValue] = snapshot
-        snapshotIndexes[containerRawValue] = index(snapshot.assets)
+        return state!
+    }
+
+    @discardableResult
+    private func reconcile() throws -> String {
+        guard isCurrentConnection() else {
+            throw NSFileProviderError(.notAuthenticated)
+        }
+        if state == nil {
+            guard let directory else { throw CocoaError(.fileNoSuchFile) }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent("state.json")
+            if FileManager.default.fileExists(atPath: url.path) {
+                state = try JSONDecoder().decode(State.self, from: Data(contentsOf: url))
+            } else {
+                try commit(importLegacyOccurrences())
+            }
+        }
+        let records = try journal.confirmedDeletions(connectionID: connectionID)
+        let pending = records.filter { !state!.receipts.contains($0.id) }
+        guard !pending.isEmpty else { return state!.epoch }
+        var next = state!
+        let deleted = Set(pending.map(\.assetID))
+        next.changes.removeAll { $0.asset.map { deleted.contains($0.id) } ?? false }
+        for (raw, occurrence) in next.occurrences where deleted.contains(occurrence.asset.id) {
+            next.sequence += 1
+            next.changes.append(Change(sequence: next.sequence, parent: occurrence.parent,
+                                       asset: nil, deleted: raw))
+            next.occurrences.removeValue(forKey: raw)
+        }
+        // Invalidate every generation: deletion shifts server page boundaries and
+        // can change grouping at the threshold even in an unfinished enumeration.
+        next.snapshots.removeAll()
+        next.drafts.removeAll()
+        next.epoch = UUID().uuidString
+        next.receipts.formUnion(pending.map(\.id))
+        next.deletedAssetIDs.formUnion(deleted)
+        next.sequence += 1 // structural invalidation fence, even with no known files
+        next.lastDeletionSequence = next.sequence
+        next.pendingSignals.formUnion(next.containers)
+        next.pendingSignals.insert(NSFileProviderItemIdentifier.workingSet.rawValue)
+        next.pendingSignals.insert(NSFileProviderItemIdentifier.rootContainer.rawValue)
+        try commit(next)
+        return next.epoch
+    }
+
+    /// v1 had no reverse index. Import both complete snapshots and interrupted
+    /// drafts, conservatively expanding every possible grouped projection.
+    /// Only the current configuration may be attributed to this connection.
+    private func importLegacyOccurrences() throws -> State {
+        struct LegacySnapshot: Decodable {
+            let configurationVersion: Int
+            let containerRawValue: String
+            let assets: [ImmichAsset]
+        }
+        var imported = State()
+        guard let legacyDirectory,
+              FileManager.default.fileExists(atPath: legacyDirectory.path) else { return imported }
+        for url in try FileManager.default.contentsOfDirectory(
+            at: legacyDirectory, includingPropertiesForKeys: nil) {
+            guard url.lastPathComponent.hasSuffix(".snapshot.json")
+                || url.lastPathComponent.hasSuffix(".draft.json") else { continue }
+            let legacy = try JSONDecoder().decode(LegacySnapshot.self, from: Data(contentsOf: url))
+            guard legacy.configurationVersion == configurationVersion else { continue }
+            let base = NSFileProviderItemIdentifier(rawValue: legacy.containerRawValue)
+            let kind = ItemID(base).kind
+            for asset in legacy.assets {
+                var parents = [base]
+                if kind == .album || kind == .person || kind == .city {
+                    let month = ItemEnumerator.monthKey(for: asset)
+                    let year = month == "unknown" ? "unknown" : String(month.prefix(4))
+                    parents.append(year == "unknown"
+                        ? ItemID.groupedYear(base: base, year: year)
+                        : ItemID.groupedMonth(base: base, month: month))
+                }
+                for parent in parents {
+                    imported.occurrences[ItemID.asset(asset.id, parent: parent).rawValue] =
+                        Occurrence(parent: parent.rawValue, asset: asset)
+                    var ancestor: NSFileProviderItemIdentifier? = parent
+                    while let container = ancestor, imported.containers.insert(container.rawValue).inserted {
+                        ancestor = ItemID(container).parent
+                    }
+                }
+            }
+        }
+        return imported
+    }
+
+    /// Signal receipts are independent of deletion receipts. Failed signals remain
+    /// durable and are retried on the next provider entry, including after restart.
+    func signalPendingChanges() async throws {
+        _ = try reconcile()
+        guard !state!.pendingSignals.isEmpty else { return }
+        let pending = state!.pendingSignals
+        let epoch = state!.epoch
+        let sequence = state!.sequence
+        for raw in pending {
+            do {
+                try await signal(raw)
+            } catch {
+                fpLog.error("deletion signal pending for \(raw, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                continue
+            }
+            _ = try reconcile()
+            // A new deletion during the await needs its own signal.
+            if state!.epoch == epoch && state!.sequence == sequence {
+                var next = state!
+                next.pendingSignals.remove(raw)
+                try commit(next)
+            }
+        }
+    }
+
+    func validateRequest() throws { _ = try checkedState() }
+
+    func needsActiveVerification(assetID: String) throws -> Bool {
+        try checkedState().deletedAssetIDs.contains(assetID)
+    }
+
+    func freshSnapshot(for container: NSFileProviderItemIdentifier,
+                       configurationVersion: Int, maximumAge: TimeInterval) throws -> CachedSnapshot? {
+        guard let snapshot = try checkedState().snapshots[container.rawValue],
+              Date().timeIntervalSince(snapshot.createdAt) <= maximumAge else { return nil }
         return snapshot
     }
 
-    private func loadDraft(
-        containerRawValue: String,
-        generation: String,
-        configurationVersion: Int
-    ) -> StoredDraft? {
-        guard let url = draftURL(
-            containerRawValue: containerRawValue, generation: generation),
-              let data = try? Data(contentsOf: url),
-              let draft = try? JSONDecoder().decode(StoredDraft.self, from: data),
-              draft.schemaVersion == Self.schemaVersion,
-              draft.configurationVersion == configurationVersion,
-              draft.containerRawValue == containerRawValue,
-              draft.generation == generation else {
-            return nil
-        }
-        return draft
+    func snapshot(for container: NSFileProviderItemIdentifier, generation: String,
+                  configurationVersion: Int) throws -> CachedSnapshot? {
+        guard let snapshot = try checkedState().snapshots[container.rawValue],
+              snapshot.generation == generation else { return nil }
+        return snapshot
     }
 
-    private func recordChanges(from old: StoredSnapshot?, to new: StoredSnapshot) {
-        var state = loadChangeState(configurationVersion: new.configurationVersion)
-        // The first snapshot is delivered by the simultaneous full item
-        // enumeration. Recording every initial item as a later "change" would make
-        // fileproviderd ingest the complete folder twice.
-        guard let old else {
-            changeState = state
-            write(state, to: changeStateURL)
-            return
-        }
-
-        let oldByID = index(old.assets)
-        let newByID = index(new.assets)
-
-        for asset in new.assets where oldByID[asset.id] != asset {
-            state.lastSequence += 1
-            state.changes.append(StoredChange(
-                sequence: state.lastSequence,
-                parentRawValue: new.containerRawValue,
-                updatedAsset: asset,
-                deletedIdentifierRawValue: nil))
-        }
-        for removed in oldByID.values where newByID[removed.id] == nil {
-            state.lastSequence += 1
-            let parent = NSFileProviderItemIdentifier(rawValue: new.containerRawValue)
-            state.changes.append(StoredChange(
-                sequence: state.lastSequence,
-                parentRawValue: new.containerRawValue,
-                updatedAsset: nil,
-                deletedIdentifierRawValue: ItemID.asset(
-                    removed.id, parent: parent).rawValue))
-        }
-
-        if state.changes.count > Self.maximumStoredChanges {
-            state.changes.removeFirst(
-                state.changes.count - Self.retainedChangesAfterCompaction)
-        }
-        state.minimumAvailableSequence =
-            state.changes.first?.sequence ?? (state.lastSequence + 1)
-        changeState = state
-        write(state, to: changeStateURL)
+    func asset(id: String, parent: NSFileProviderItemIdentifier,
+               configurationVersion: Int) throws -> ImmichAsset? {
+        try checkedState().snapshots[parent.rawValue]?.assets.first { $0.id == id }
     }
 
-    private func loadChangeState(configurationVersion: Int) -> StoredChangeState {
-        if let state = changeState, state.configurationVersion == configurationVersion {
-            return state
+    func append(_ assets: [ImmichAsset], pageNumber: Int, finalPage: Bool,
+                for container: NSFileProviderItemIdentifier, generation: String,
+                configurationVersion: Int) throws {
+        var next = try checkedState()
+        let key = "\(container.rawValue):\(generation)"
+        guard pageNumber == 1 || next.drafts[key] != nil else {
+            throw NSFileProviderError(.pageExpired)
         }
-        if let url = changeStateURL,
-           let data = try? Data(contentsOf: url),
-           let state = try? JSONDecoder().decode(StoredChangeState.self, from: data),
-           state.schemaVersion == Self.schemaVersion,
-           state.configurationVersion == configurationVersion {
-            changeState = state
-            return state
+        var draft = pageNumber == 1 ? [] : next.drafts[key]!
+        var known = Set(draft.map(\.id))
+        draft.append(contentsOf: assets.filter { known.insert($0.id).inserted })
+        next.drafts[key] = draft
+        try commit(next)
+        if finalPage {
+            try publish(draft, for: container, generation: generation,
+                        configurationVersion: configurationVersion)
+            next = state!
+            next.drafts.removeValue(forKey: key)
+            try commit(next)
         }
-        let empty = StoredChangeState(
-            schemaVersion: Self.schemaVersion,
-            configurationVersion: configurationVersion,
-            lastSequence: 0,
-            minimumAvailableSequence: 1,
-            changes: [])
-        changeState = empty
-        return empty
     }
 
-    private var changeStateURL: URL? {
-        cacheDirectory?.appendingPathComponent("changes.json")
-    }
-
-    private func snapshotURL(containerRawValue: String) -> URL? {
-        cacheDirectory?.appendingPathComponent(
-            "\(encodedFileComponent(containerRawValue)).snapshot.json")
-    }
-
-    private func draftURL(containerRawValue: String, generation: String) -> URL? {
-        cacheDirectory?.appendingPathComponent(
-            "\(encodedFileComponent(containerRawValue)).\(generation).draft.json")
-    }
-
-    private func draftKey(containerRawValue: String, generation: String) -> String {
-        "\(containerRawValue)|\(generation)"
-    }
-
-    private func encodedFileComponent(_ value: String) -> String {
-        Data(value.utf8).base64EncodedString()
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
-    private func index(_ assets: [ImmichAsset]) -> [String: ImmichAsset] {
-        var result: [String: ImmichAsset] = [:]
-        for asset in assets {
-            result[asset.id] = asset
+    func publish(_ assets: [ImmichAsset], for container: NSFileProviderItemIdentifier,
+                 generation: String, configurationVersion: Int, emitChanges: Bool = true) throws {
+        var next = try checkedState()
+        if emitChanges, let old = next.snapshots[container.rawValue] {
+            let newIDs = Set(assets.map(\.id))
+            for asset in old.assets where !newIDs.contains(asset.id) {
+                let raw = ItemID.asset(asset.id, parent: container).rawValue
+                next.sequence += 1
+                next.changes.append(Change(sequence: next.sequence, parent: container.rawValue,
+                                           asset: nil, deleted: raw))
+                next.occurrences.removeValue(forKey: raw)
+            }
         }
-        return result
+        next.snapshots[container.rawValue] = CachedSnapshot(
+            generation: generation, createdAt: Date(), assets: assets)
+        try commit(next)
     }
 
-    private func write<T: Encodable>(_ value: T, to url: URL?) {
-        guard let url,
-              let data = try? JSONEncoder().encode(value) else { return }
-        do {
-            try data.write(to: url, options: .atomic)
-        } catch {
-            fpLog.error(
-                "metadata cache write failed: \(error.localizedDescription, privacy: .public)")
+    /// Called before exposing ANY item to fileproviderd, not only on final pages.
+    /// Thus grouped projections and incomplete drafts cannot lose known aliases.
+    func record(_ items: [FileProviderItem], in container: NSFileProviderItemIdentifier,
+                enumerating: Bool = false) throws {
+        var next = try checkedState()
+        let previousSequence = next.sequence
+        let previousContainerCount = next.containers.count
+        rememberContainer(container, in: &next)
+        if enumerating && container != .workingSet {
+            let folders = Set(items.filter { $0.assetMetadata == nil }.map { $0.itemIdentifier.rawValue })
+            let missing = next.containers.filter {
+                $0 != container.rawValue
+                    && ItemID(NSFileProviderItemIdentifier(rawValue: $0)).parent == container
+                    && !folders.contains($0)
+            }
+            var removed = Set<String>()
+            for raw in next.containers {
+                var ancestor: NSFileProviderItemIdentifier? = NSFileProviderItemIdentifier(rawValue: raw)
+                while let current = ancestor {
+                    if missing.contains(current.rawValue) {
+                        removed.insert(raw)
+                        break
+                    }
+                    ancestor = ItemID(current).parent
+                }
+            }
+            let dropped = next.occurrences.filter { removed.contains($0.value.parent) }
+            next.changes.removeAll { change in
+                guard let asset = change.asset else { return false }
+                return dropped[ItemID.asset(asset.id, parent: NSFileProviderItemIdentifier(rawValue: change.parent)).rawValue] != nil
+            }
+            for (raw, occurrence) in dropped {
+                next.sequence += 1
+                next.changes.append(Change(sequence: next.sequence, parent: occurrence.parent, asset: nil, deleted: raw))
+                next.occurrences.removeValue(forKey: raw)
+            }
+            for raw in removed {
+                guard let parent = ItemID(NSFileProviderItemIdentifier(rawValue: raw)).parent else { continue }
+                next.sequence += 1
+                next.changes.append(Change(sequence: next.sequence, parent: parent.rawValue, asset: nil, deleted: raw))
+            }
+            next.containers.subtract(removed)
+            next.pendingSignals.subtract(removed)
+            if !removed.isEmpty {
+                next.pendingSignals.insert(NSFileProviderItemIdentifier.workingSet.rawValue)
+                next.pendingSignals.insert(container.rawValue)
+            }
         }
+        for item in items {
+            rememberContainer(item.parentItemIdentifier, in: &next)
+            if let asset = item.assetMetadata {
+                let raw = item.itemIdentifier.rawValue
+                let old = next.occurrences[raw]
+                if old?.asset != asset {
+                    next.sequence += 1
+                    next.changes.append(Change(sequence: next.sequence,
+                                               parent: item.parentItemIdentifier.rawValue,
+                                               asset: asset, deleted: nil))
+                    next.occurrences[raw] = Occurrence(parent: item.parentItemIdentifier.rawValue, asset: asset)
+                }
+            } else {
+                rememberContainer(item.itemIdentifier, in: &next)
+            }
+        }
+        if next.sequence != previousSequence || next.containers.count != previousContainerCount {
+            try commit(next)
+        }
+    }
+
+    private func rememberContainer(_ container: NSFileProviderItemIdentifier, in state: inout State) {
+        var ancestor: NSFileProviderItemIdentifier? = container
+        while let current = ancestor {
+            if !state.containers.insert(current.rawValue).inserted { break }
+            ancestor = ItemID(current).parent
+        }
+    }
+
+    func workingSetItems() throws -> [FileProviderItem] {
+        try checkedState().occurrences.values.map {
+            FileProviderItem(asset: $0.asset, parent: NSFileProviderItemIdentifier(rawValue: $0.parent))
+        }
+    }
+
+    func currentChangeSequence(configurationVersion: Int) throws -> Int64 {
+        try checkedState().sequence
+    }
+
+    func changes(after anchor: Int64, for container: NSFileProviderItemIdentifier,
+                 maximumCount: Int, configurationVersion: Int) throws -> ChangeBatch {
+        let state = try checkedState()
+        // Structural container contents must be refetched; signaling alone never
+        // refreshes them. Working set retains explicit per-occurrence deletions.
+        if anchor < state.minimumSequence - 1 || anchor > state.sequence
+            || (container != .workingSet && anchor < state.lastDeletionSequence) {
+            return ChangeBatch(updates: [], deletedIdentifiers: [], anchor: state.sequence,
+                               moreComing: false, anchorExpired: true)
+        }
+        let relevant = state.changes.filter {
+            $0.sequence > anchor && (container == .workingSet || $0.parent == container.rawValue)
+        }
+        let selected = relevant.prefix(max(1, maximumCount))
+        // Coalesce within a batch so an earlier update cannot override its later
+        // deletion (or vice versa) when the observer receives separate callbacks.
+        var latest: [String: Change] = [:]
+        for change in selected {
+            let raw = change.deleted ?? ItemID.asset(change.asset!.id,
+                parent: NSFileProviderItemIdentifier(rawValue: change.parent)).rawValue
+            latest[raw] = change
+        }
+        let more = relevant.count > selected.count
+        return ChangeBatch(updates: latest.values.compactMap { change in
+            change.asset.map { CachedUpdate(parent: NSFileProviderItemIdentifier(rawValue: change.parent), asset: $0) }
+        }, deletedIdentifiers: latest.values.compactMap { $0.deleted.map(NSFileProviderItemIdentifier.init(rawValue:)) },
+        anchor: more ? selected.last!.sequence : state.sequence, moreComing: more, anchorExpired: false)
+    }
+
+    private func commit(_ value: State) throws {
+        guard let directory else { throw CocoaError(.fileNoSuchFile) }
+        var next = value
+        if next.changes.count > 200_000 {
+            next.changes.removeFirst(next.changes.count - 100_000)
+        }
+        next.minimumSequence = next.changes.first?.sequence ?? (next.sequence + 1)
+        let data = try JSONEncoder().encode(next)
+        try data.write(to: directory.appendingPathComponent("state.json"), options: .atomic)
+        state = next
     }
 }

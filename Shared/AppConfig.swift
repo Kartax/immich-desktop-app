@@ -23,6 +23,7 @@ enum AppConfig {
         var serverURL: String?
         var apiKey: String?
         var configurationVersion: Int?
+        var allowDeletions: Bool? // nil → false, including upgrades.
         var showTimeline: Bool?   // nil → true (default on, so old config files show all views)
         var showPersons: Bool?
         var showPlaces: Bool?
@@ -56,12 +57,27 @@ enum AppConfig {
 
     static var serverURL: String? {
         get { load().serverURL }
-        set { var s = load(); s.serverURL = newValue; store(s) }
+        set {
+            var s = load()
+            if s.serverURL != newValue { s.allowDeletions = false }
+            s.serverURL = newValue
+            store(s)
+        }
     }
 
     static var apiKey: String? {
         get { load().apiKey }
-        set { var s = load(); s.apiKey = newValue; store(s) }
+        set {
+            var s = load()
+            if s.apiKey != newValue { s.allowDeletions = false }
+            s.apiKey = newValue
+            store(s)
+        }
+    }
+
+    static var allowDeletions: Bool {
+        get { load().allowDeletions ?? false }
+        set { var s = load(); s.allowDeletions = newValue; store(s) }
     }
 
     static var showTimeline: Bool {
@@ -126,6 +142,9 @@ enum AppConfig {
     /// Set server credentials atomically without touching view-toggle flags.
     static func set(serverURL: String, apiKey: String) {
         var s = load()
+        if s.serverURL != serverURL || s.apiKey != apiKey {
+            s.allowDeletions = false
+        }
         s.serverURL = serverURL
         s.apiKey = apiKey
         _ = materializeGroupingModes(in: &s)

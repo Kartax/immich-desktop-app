@@ -67,10 +67,33 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
     init(container: NSFileProviderItemIdentifier,
          client: ImmichClient,
-         cache: AssetMetadataCache = .shared) {
+         cache: AssetMetadataCache) {
         self.container = container
         self.client = client
         self.cache = cache
+    }
+
+    /// Missing date groups must not be recreated by static item lookup after a
+    /// deletion or a grouping-threshold transition.
+    func validateGroupedContainer() async throws {
+        let id = ItemID(container)
+        guard let base = id.groupedBaseContainer else { throw NSFileProviderError(.noSuchItem) }
+        let snapshot = try await groupedBaseSnapshot(for: base)
+        let mode: AppConfig.FolderGroupingMode
+        switch ItemID(base).kind {
+        case .album: mode = AppConfig.albumGroupingMode
+        case .person: mode = AppConfig.personGroupingMode
+        case .city: mode = AppConfig.placeGroupingMode
+        default: throw NSFileProviderError(.noSuchItem)
+        }
+        guard Self.shouldGroup(assetCount: snapshot.assets.count, mode: mode),
+              snapshot.assets.contains(where: {
+                  id.kind == .groupedYear
+                      ? Self.yearKey(for: $0) == id.value
+                      : Self.monthKey(for: $0) == id.value
+              }) else {
+            throw NSFileProviderError(.noSuchItem)
+        }
     }
 
     func invalidate() {
@@ -84,8 +107,9 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver,
                         startingAt page: NSFileProviderPage) {
-        // The working set is driven by change enumeration below. Trash is unsupported.
-        if container == .workingSet || container == .trashContainer {
+        // Trash stays unsupported. Working-set recovery enumerates durable live
+        // occurrences after an expired change anchor.
+        if container == .trashContainer {
             observer.finishEnumerating(upTo: nil)
             return
         }
@@ -94,6 +118,13 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         let task = Task { [weak self] in
             guard let self else { return }
             do {
+                try await self.cache.withRequest {
+                if self.container == .workingSet {
+                    let items = try await self.cache.workingSetItems()
+                    try await self.report(items, to: observer)
+                    observer.finishEnumerating(upTo: nil)
+                    return
+                }
                 try self.checkCancellation()
                 let id = ItemID(self.container)
                 if !Self.supportsPaging(id.kind), !Self.isInitialPage(page) {
@@ -111,13 +142,13 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                         let albums = try await self.client.albums()
                         items.append(contentsOf: albums.map { FileProviderItem(album: $0) })
                     }
-                    try self.report(items, to: observer)
+                    try await self.report(items, to: observer)
 
                 case .timeline:
                     let buckets = try await self.client.monthBuckets()
                     let years = TimelineFormat.orderedDistinct(
                         buckets.map { String($0.timeBucket.prefix(4)) })
-                    try self.report(
+                    try await self.report(
                         years.map { FileProviderItem.yearFolder($0) }, to: observer)
 
                 case .year:
@@ -125,7 +156,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     let months = TimelineFormat.orderedDistinct(
                         buckets.map { String($0.timeBucket.prefix(7)) }
                             .filter { $0.hasPrefix(id.value + "-") })
-                    try self.report(months.map {
+                    try await self.report(months.map {
                         FileProviderItem.monthFolder(
                             value: $0, display: TimelineFormat.monthDisplay($0))
                     }, to: observer)
@@ -149,7 +180,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
                 case .persons:
                     let people = try await self.client.people()
-                    try self.report(people.map {
+                    try await self.report(people.map {
                         FileProviderItem.personFolder(id: $0.id, name: $0.name ?? "")
                     }, to: observer)
 
@@ -164,12 +195,12 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
 
                 case .places:
                     let countries = try await self.client.countries()
-                    try self.report(
+                    try await self.report(
                         countries.map { FileProviderItem.countryFolder($0) }, to: observer)
 
                 case .country:
                     let cities = try await self.client.cities(inCountry: id.value)
-                    try self.report(cities.map {
+                    try await self.report(cities.map {
                         FileProviderItem.cityFolder(country: id.value, city: $0)
                     }, to: observer)
 
@@ -187,6 +218,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     }
 
                 case .groupedYear:
+                    try await self.validateGroupedContainer()
                     guard let base = id.groupedBaseContainer else {
                         throw NSFileProviderError(.noSuchItem)
                     }
@@ -194,6 +226,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                         id.value, base: base, for: observer, startingAt: page)
 
                 case .groupedMonth:
+                    try await self.validateGroupedContainer()
                     guard let base = id.groupedBaseContainer else {
                         throw NSFileProviderError(.noSuchItem)
                     }
@@ -210,6 +243,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     "enumerate \(self.container.rawValue, privacy: .public): OK, more=\(nextPage != nil, privacy: .public), elapsedMs=\(elapsed, format: .fixed(precision: 1), privacy: .public)"
                 )
                 observer.finishEnumerating(upTo: nextPage)
+                }
             } catch {
                 if self.wasCancelled(error) {
                     fpLog.info(
@@ -230,13 +264,14 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         let task = Task { [weak self] in
             guard let self else { return }
             do {
+                try await self.cache.withRequest {
                 try self.checkCancellation()
-                guard let sequence = Self.sequence(from: anchor) else {
+                guard let sequence = self.sequence(from: anchor) else {
                     throw NSFileProviderError(.syncAnchorExpired)
                 }
                 let maximumCount = Self.batchSize(
                     forSuggestedSize: observer.suggestedBatchSize)
-                let changes = await self.cache.changes(
+                let changes = try await self.cache.changes(
                     after: sequence,
                     for: self.container,
                     maximumCount: maximumCount,
@@ -258,8 +293,9 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     "enumerateChanges \(self.container.rawValue, privacy: .public): updates=\(changes.updates.count, privacy: .public), deletes=\(changes.deletedIdentifiers.count, privacy: .public), more=\(changes.moreComing, privacy: .public)"
                 )
                 observer.finishEnumeratingChanges(
-                    upTo: Self.syncAnchor(changes.anchor),
+                    upTo: self.syncAnchor(changes.anchor),
                     moreComing: changes.moreComing)
+                }
             } catch {
                 if self.wasCancelled(error) { return }
                 observer.finishEnumeratingWithError(error)
@@ -271,10 +307,17 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
     func currentSyncAnchor(
         completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void
     ) {
-        Task { [cache, configurationVersion = client.configurationVersion] in
-            let sequence = await cache.currentChangeSequence(
-                configurationVersion: configurationVersion)
-            completionHandler(Self.syncAnchor(sequence))
+        Task {
+            do {
+                let sequence = try await cache.withRequest {
+                    try await self.cache.currentChangeSequence(
+                        configurationVersion: self.client.configurationVersion)
+                }
+                completionHandler(self.syncAnchor(sequence))
+            } catch {
+                fpLog.error("current anchor unavailable: \(error.localizedDescription, privacy: .public)")
+                completionHandler(nil)
+            }
         }
     }
 
@@ -297,7 +340,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         )
 
         let snapshot: AssetMetadataCache.CachedSnapshot
-        if let cached = await cache.freshSnapshot(
+        if let cached = try await cache.freshSnapshot(
             for: parent,
             configurationVersion: client.configurationVersion,
             maximumAge: Self.freshSnapshotLifetime
@@ -311,7 +354,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             let result = try await fetchCompleteAssets(load: load)
             let shouldGroup = Self.shouldGroup(
                 assetCount: result.assets.count, mode: groupingMode)
-            await cache.publish(
+            try await cache.publish(
                 result.assets,
                 for: parent,
                 generation: generation,
@@ -327,13 +370,13 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         }
 
         guard Self.shouldGroup(assetCount: snapshot.assets.count, mode: groupingMode) else {
-            return try reportCached(
+            return try await reportCached(
                 snapshot, offset: 0, size: size, sort: sort, to: observer)
         }
 
         let years = Self.orderedPeriods(
             Set(snapshot.assets.map { Self.yearKey(for: $0) }))
-        try report(
+        try await report(
             years.map {
                 FileProviderItem.groupedYearFolder(base: parent, year: $0)
             },
@@ -365,7 +408,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 .map { Self.monthKey(for: $0) }
                 .filter { Self.yearKey(forMonth: $0) == year }
         ))
-        try report(
+        try await report(
             months.map {
                 FileProviderItem.groupedMonthFolder(base: base, month: $0)
             },
@@ -409,7 +452,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         } else {
             guard let token = PageToken(data: page.rawValue),
                   token.request.source == .cache,
-                  let cached = await cache.snapshot(
+                  let cached = try await cache.snapshot(
                     for: base,
                     generation: token.request.generation,
                     configurationVersion: client.configurationVersion
@@ -426,14 +469,14 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             generation: snapshot.generation,
             createdAt: snapshot.createdAt,
             assets: snapshot.assets.filter(predicate))
-        return try reportCached(
+        return try await reportCached(
             filteredSnapshot, offset: offset, size: size, sort: sort, to: observer)
     }
 
     private func groupedBaseSnapshot(
         for base: NSFileProviderItemIdentifier
     ) async throws -> AssetMetadataCache.CachedSnapshot {
-        if let cached = await cache.freshSnapshot(
+        if let cached = try await cache.freshSnapshot(
             for: base,
             configurationVersion: client.configurationVersion,
             maximumAge: Self.freshSnapshotLifetime
@@ -446,7 +489,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 for: base, page: page, size: size)
         }
         let generation = UUID().uuidString
-        await cache.publish(
+        try await cache.publish(
             result.assets,
             for: base,
             generation: generation,
@@ -521,7 +564,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 "enumerate \(self.container.rawValue, privacy: .public): initial sort=\(sort.rawValue, privacy: .public), suggested=\(observer.suggestedPageSize ?? 0, privacy: .public), selected=\(size, privacy: .public)"
             )
 
-            if let snapshot = await cache.freshSnapshot(
+            if let snapshot = try await cache.freshSnapshot(
                 for: parent,
                 configurationVersion: client.configurationVersion,
                 maximumAge: Self.freshSnapshotLifetime
@@ -529,7 +572,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 fpLog.info(
                     "enumerate \(self.container.rawValue, privacy: .public): fresh metadata cache hit (\(snapshot.assets.count, privacy: .public) items)"
                 )
-                return try reportCached(
+                return try await reportCached(
                     snapshot, offset: 0, size: size, sort: sort, to: observer)
             }
 
@@ -544,14 +587,14 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         }
 
         if request.source == .cache {
-            guard let snapshot = await cache.snapshot(
+            guard let snapshot = try await cache.snapshot(
                 for: parent,
                 generation: request.generation,
                 configurationVersion: client.configurationVersion
             ) else {
                 throw NSFileProviderError(.pageExpired)
             }
-            return try reportCached(
+            return try await reportCached(
                 snapshot, offset: request.position, size: request.size,
                 sort: request.sort, to: observer)
         }
@@ -565,13 +608,13 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 firstPage: result, pageSize: request.size, parent: parent,
                 generation: request.generation, load: load
             ) {
-                return try reportCached(
+                return try await reportCached(
                     snapshot, offset: 0, size: request.size,
                     sort: .name, to: observer)
             }
         }
 
-        await cache.append(
+        try await cache.append(
             result.assets,
             pageNumber: request.position,
             finalPage: result.nextPage == nil,
@@ -579,7 +622,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             generation: request.generation,
             configurationVersion: client.configurationVersion)
         let items = result.assets.map { FileProviderItem(asset: $0, parent: parent) }
-        try report(items, to: observer)
+        try await report(items, to: observer)
         fpLog.info(
             "enumerate \(self.container.rawValue, privacy: .public) server page \(request.position, privacy: .public): \(items.count, privacy: .public) item(s)"
         )
@@ -630,7 +673,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         }
 
         let sorted = Self.ordered(allAssets, by: .name)
-        await cache.publish(
+        try await cache.publish(
             sorted,
             for: parent,
             generation: generation,
@@ -648,7 +691,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         size: Int,
         sort: RequestedSort,
         to observer: NSFileProviderEnumerationObserver
-    ) throws -> NSFileProviderPage? {
+    ) async throws -> NSFileProviderPage? {
         let assets = Self.ordered(snapshot.assets, by: sort)
         guard offset >= 0, offset <= assets.count else {
             throw NSFileProviderError(.pageExpired)
@@ -657,7 +700,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         let items = assets[offset..<end].map {
             FileProviderItem(asset: $0, parent: self.container)
         }
-        try report(items, to: observer)
+        try await report(items, to: observer)
         fpLog.info(
             "enumerate \(self.container.rawValue, privacy: .public) cache offset \(offset, privacy: .public): \(items.count, privacy: .public) item(s)"
         )
@@ -669,7 +712,9 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     private func report(_ items: [FileProviderItem],
-                        to observer: NSFileProviderEnumerationObserver) throws {
+                        to observer: NSFileProviderEnumerationObserver) async throws {
+        try checkCancellation()
+        try await cache.record(items, in: container, enumerating: true)
         try checkCancellation()
         let startedAt = Date()
         observer.didEnumerate(items)
@@ -762,7 +807,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         }
     }
 
-    private static func monthKey(for asset: ImmichAsset) -> String {
+    static func monthKey(for asset: ImmichAsset) -> String {
         guard let date = asset.fileCreatedAt else { return "unknown" }
         let candidate = String(date.prefix(7))
         let components = candidate.split(
@@ -821,18 +866,20 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
         }
     }
 
-    private static func syncAnchor(_ sequence: Int64) -> NSFileProviderSyncAnchor {
-        NSFileProviderSyncAnchor(Data("immich-sync:1:\(sequence)".utf8))
+    private func syncAnchor(_ sequence: Int64) -> NSFileProviderSyncAnchor {
+        NSFileProviderSyncAnchor(Data("immich-sync:2:\(client.connectionID):\(client.configurationVersion):\(sequence)".utf8))
     }
 
-    private static func sequence(from anchor: NSFileProviderSyncAnchor) -> Int64? {
+    private func sequence(from anchor: NSFileProviderSyncAnchor) -> Int64? {
         guard let value = String(data: anchor.rawValue, encoding: .utf8) else {
             return nil
         }
         let fields = value.split(separator: ":", omittingEmptySubsequences: false)
-        guard fields.count == 3,
-              fields[0] == "immich-sync", fields[1] == "1",
-              let sequence = Int64(fields[2]), sequence >= 0 else {
+        guard fields.count == 5,
+              fields[0] == "immich-sync", fields[1] == "2",
+              fields[2] == client.connectionID,
+              Int(fields[3]) == client.configurationVersion,
+              let sequence = Int64(fields[4]), sequence >= 0 else {
             return nil
         }
         return sequence

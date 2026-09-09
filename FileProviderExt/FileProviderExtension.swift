@@ -4,10 +4,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     private static let maximumConcurrentThumbnailRequests = 8
 
     private let client: ImmichClient?
-    private let metadataCache = AssetMetadataCache.shared
+    private let metadataCache: AssetMetadataCache?
 
     required init(domain: NSFileProviderDomain) {
-        client = ImmichClient()
+        let client = ImmichClient()
+        self.client = client
+        metadataCache = client.map { AssetMetadataCache.shared(for: $0) }
         super.init()
         fpLog.info("FileProviderExtension init for domain \(domain.identifier.rawValue, privacy: .public)")
     }
@@ -20,90 +22,83 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
               request: NSFileProviderRequest,
               completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        let id = ItemID(identifier)
-
-        // Answer folders directly without network access.
-        let staticFolder: FileProviderItem?
-        switch id.kind {
-        case .root:     staticFolder = FileProviderItem.root
-        case .timeline: staticFolder = FileProviderItem.timelineFolder()
-        case .year:     staticFolder = FileProviderItem.yearFolder(id.value)
-        case .month:    staticFolder = FileProviderItem.monthFolder(
-                            value: id.value, display: TimelineFormat.monthDisplay(id.value))
-        case .persons:  staticFolder = FileProviderItem.personsFolder()
-        case .places:   staticFolder = FileProviderItem.placesFolder()
-        case .country:  staticFolder = FileProviderItem.countryFolder(id.value)
-        case .city:     staticFolder = id.cityComponents.map {
-                            FileProviderItem.cityFolder(country: $0.country, city: $0.city)
-                        }
-        case .groupedYear:
-            staticFolder = id.groupedBaseContainer.map {
-                FileProviderItem.groupedYearFolder(base: $0, year: id.value)
-            }
-        case .groupedMonth:
-            staticFolder = id.groupedBaseContainer.map {
-                FileProviderItem.groupedMonthFolder(base: $0, month: id.value)
-            }
-        case .album, .asset, .person: staticFolder = nil
-        }
-        if let folder = staticFolder {
-            completionHandler(folder, nil)
-            progress.completedUnitCount = 1
-            return progress
-        }
-
-        guard let client else {
+        guard let client, let metadataCache else {
             completionHandler(nil, NSFileProviderError(.notAuthenticated))
             return progress
         }
-
-        let startedAt = Date()
         let task = Task {
             do {
-                switch id.kind {
-                case .album:
-                    let album = try await client.album(id: id.value)
-                    completionHandler(FileProviderItem(album: album), nil)
-                case .asset:
-                    let itemParent = id.parent ?? .rootContainer
-                    let cacheParent =
-                        ItemID(itemParent).groupedBaseContainer ?? itemParent
-                    let cached = await self.metadataCache.asset(
-                        id: id.value,
-                        parent: cacheParent,
-                        configurationVersion: client.configurationVersion)
-                    let asset: ImmichAsset
-                    if let cached {
-                        asset = cached
-                    } else {
-                        asset = try await client.asset(id: id.value)
-                    }
-                    fpLog.debug(
-                        "item(for:) asset cacheHit=\(cached != nil, privacy: .public)"
-                    )
-                    completionHandler(
-                        FileProviderItem(asset: asset, parent: itemParent), nil)
-                case .person:
-                    let people = try await client.people()
-                    if let match = people.first(where: { $0.id == id.value }) {
-                        completionHandler(
-                            FileProviderItem.personFolder(id: match.id, name: match.name ?? ""), nil)
-                    } else {
-                        completionHandler(nil, NSFileProviderError(.noSuchItem))
-                    }
-                default:
-                    completionHandler(nil, NSFileProviderError(.noSuchItem))
+                try await metadataCache.withRequest {
+                    let item = try await self.loadItem(identifier, client: client, cache: metadataCache)
+                    try await metadataCache.record([item], in: item.parentItemIdentifier)
+                    try Task.checkCancellation()
+                    completionHandler(item, nil)
+                    progress.completedUnitCount = 1
                 }
-                progress.completedUnitCount = 1
-                fpLog.debug(
-                    "item(for:) \(identifier.rawValue, privacy: .public) elapsedMs=\(Date().timeIntervalSince(startedAt) * 1000, format: .fixed(precision: 1), privacy: .public)"
-                )
             } catch {
                 completionHandler(nil, error)
             }
         }
         progress.cancellationHandler = { task.cancel() }
         return progress
+    }
+
+    private func loadItem(_ identifier: NSFileProviderItemIdentifier,
+                          client: ImmichClient, cache: AssetMetadataCache) async throws -> FileProviderItem {
+        let id = ItemID(identifier)
+        switch id.kind {
+        case .root: return .root
+        case .timeline: return .timelineFolder()
+        case .year: return .yearFolder(id.value)
+        case .month:
+            return .monthFolder(value: id.value, display: TimelineFormat.monthDisplay(id.value))
+        case .persons: return .personsFolder()
+        case .places: return .placesFolder()
+        case .country: return .countryFolder(id.value)
+        case .city:
+            guard let parts = id.cityComponents else { throw NSFileProviderError(.noSuchItem) }
+            return .cityFolder(country: parts.country, city: parts.city)
+        case .groupedYear, .groupedMonth:
+            guard let base = id.groupedBaseContainer else { throw NSFileProviderError(.noSuchItem) }
+            try await ItemEnumerator(container: identifier, client: client, cache: cache)
+                .validateGroupedContainer()
+            return id.kind == .groupedYear
+                ? .groupedYearFolder(base: base, year: id.value)
+                : .groupedMonthFolder(base: base, month: id.value)
+        case .album:
+            return FileProviderItem(album: try await client.album(id: id.value))
+        case .person:
+            guard let person = try await client.people().first(where: { $0.id == id.value }) else {
+                throw NSFileProviderError(.noSuchItem)
+            }
+            return .personFolder(id: person.id, name: person.name ?? "")
+        case .asset:
+            let parent = id.parent ?? .rootContainer
+            let cacheParent = ItemID(parent).groupedBaseContainer ?? parent
+            let mustVerify = try await cache.needsActiveVerification(assetID: id.value)
+            if !mustVerify, let asset = try await cache.asset(
+                id: id.value, parent: cacheParent, configurationVersion: client.configurationVersion) {
+                return FileProviderItem(asset: asset, parent: parent)
+            }
+            return FileProviderItem(asset: try await loadActiveAsset(id.value, client: client, cache: cache), parent: parent)
+        }
+    }
+
+    private func loadActiveAsset(_ id: String, client: ImmichClient,
+                                 cache: AssetMetadataCache) async throws -> ImmichAsset {
+        do {
+            return try await client.activeAsset(id: id)
+        } catch {
+            // A generic missing/inaccessible response is not evidence of absence.
+            // Only explicit server trash/deleted state maps to noSuchItem.
+            if let urlError = error as? URLError, urlError.code == .resourceUnavailable,
+               try await cache.needsActiveVerification(assetID: id) {
+                let state = await client.deletionState(id: id)
+                try await cache.validateRequest()
+                if state == .deleted { throw NSFileProviderError(.noSuchItem) }
+            }
+            throw error
+        }
     }
 
     // MARK: - Contents (on-demand download)
@@ -114,32 +109,30 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                        completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 1)
         let id = ItemID(itemIdentifier)
-
-        guard id.kind == .asset, let client else {
+        guard id.kind == .asset, let client, let metadataCache else {
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return progress
         }
-
         let task = Task {
+            var downloadedURL: URL?
             do {
-                let url = try await client.downloadOriginal(id: id.value)
-                let itemParent = id.parent ?? .rootContainer
-                let cacheParent =
-                    ItemID(itemParent).groupedBaseContainer ?? itemParent
-                let cached = await self.metadataCache.asset(
-                    id: id.value,
-                    parent: cacheParent,
-                    configurationVersion: client.configurationVersion)
-                let asset: ImmichAsset
-                if let cached {
-                    asset = cached
-                } else {
-                    asset = try await client.asset(id: id.value)
+                try await metadataCache.withRequest {
+                    let parent = id.parent ?? .rootContainer
+                    let asset = try await self.loadActiveAsset(id.value, client: client, cache: metadataCache)
+                    try await metadataCache.validateRequest()
+                    let url = try await client.downloadOriginal(id: id.value)
+                    downloadedURL = url
+                    let item = FileProviderItem(asset: asset, parent: parent)
+                    try await metadataCache.record([item], in: parent)
+                    try Task.checkCancellation()
+                    completionHandler(url, item, nil)
+                    progress.completedUnitCount = 1
                 }
-                completionHandler(
-                    url, FileProviderItem(asset: asset, parent: itemParent), nil)
-                progress.completedUnitCount = 1
             } catch {
+                if let downloadedURL {
+                    do { try FileManager.default.removeItem(at: downloadedURL) }
+                    catch { fpLog.error("Discarding stale fetched content failed: \(error.localizedDescription, privacy: .public)") }
+                }
                 completionHandler(nil, nil, error)
             }
         }
@@ -155,7 +148,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                          completionHandler: @escaping (Error?) -> Void) -> Progress {
         fpLog.info("fetchThumbnails: \(itemIdentifiers.count, privacy: .public) item(s)")
         let progress = Progress(totalUnitCount: Int64(itemIdentifiers.count))
-        guard let client else {
+        guard let client, let metadataCache else {
             completionHandler(NSFileProviderError(.notAuthenticated))
             return progress
         }
@@ -177,9 +170,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                                 return
                             }
                             do {
-                                let data = try await client.thumbnail(id: id.value)
-                                if !Task.isCancelled {
-                                    perThumbnailCompletionHandler(identifier, data, nil)
+                                try await metadataCache.withRequest {
+                                    let item = try await self.loadItem(
+                                        identifier, client: client, cache: metadataCache)
+                                    let data = try await client.thumbnail(id: id.value)
+                                    try await metadataCache.record([item], in: item.parentItemIdentifier)
+                                    if !Task.isCancelled {
+                                        perThumbnailCompletionHandler(identifier, data, nil)
+                                    }
                                 }
                             } catch {
                                 if !Task.isCancelled {
@@ -214,7 +212,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier,
                     request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
         fpLog.info("enumerator(for: \(containerItemIdentifier.rawValue, privacy: .public))")
-        guard let client else {
+        guard let client, let metadataCache else {
             fpLog.error("enumerator: notAuthenticated")
             throw NSFileProviderError(.notAuthenticated)
         }

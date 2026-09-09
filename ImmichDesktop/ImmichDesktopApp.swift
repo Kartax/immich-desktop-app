@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var settingsWindow: NSWindow?
     private var galleryWindow: NSWindow?
     private let downloadBatch = DownloadBatch()
+    private let deletionBatch = DeletionBatch()
     private var domainActivationTask: Task<Void, Never>?
     private var terminationInProgress = false
 
@@ -52,6 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                     )
                 }
             }
+            Task {
+                await domainActivationTask?.value
+                await deletionBatch.refreshCapabilities()
+                await DomainManager.signalDeletionChanges()
+            }
         } else {
             // Nothing set up yet — bring the settings window up so the app is usable.
             showSettings()
@@ -62,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         ConnectionMonitor.shared.start()
         UpdateChecker.shared.start()
         trackStatusState()
+        trackDeletionState()
     }
 
     /// Keep the app alive when the settings window is closed (it's a menu bar app).
@@ -103,6 +110,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             updateIconState()
         } onChange: { [weak self] in
             Task { @MainActor in self?.trackStatusState() }
+        }
+    }
+
+    /// Signals are app-owned too: closing the gallery must not lose Finder updates.
+    private func trackDeletionState() {
+        withObservationTracking {
+            _ = deletionBatch.successfulAssetIDs
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.trackDeletionState()
+                await DomainManager.signalDeletionChanges()
+            }
         }
     }
 
@@ -179,8 +199,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     @objc private func openDownloadPage() { NSWorkspace.shared.open(UpdateChecker.downloadPageURL) }
-    @objc private func quit() {
-        guard !terminationInProgress else { return }
+    @objc private func quit() { NSApplication.shared.terminate(nil) }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationInProgress else { return .terminateLater }
+        if deletionBatch.phase == .running {
+            let alert = NSAlert()
+            alert.messageText = "Deletion in progress"
+            alert.informativeText = "Quitting stops unsent deletions and waits for the current request to finish. Its outcome will be retained when you next open the gallery."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Continue Deletion")
+            alert.addButton(withTitle: "Stop and Quit")
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+            deletionBatch.stop()
+        }
         if downloadBatch.phase == .running {
             let alert = NSAlert()
             alert.messageText = "Download in progress"
@@ -189,19 +221,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             alert.addButton(withTitle: "Continue Download")
             let cancelButton = alert.addButton(withTitle: "Quit and Cancel Download")
             cancelButton.hasDestructiveAction = true
-            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
             downloadBatch.cancel()
         }
 
         terminationInProgress = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            while self.downloadBatch.phase == .running {
+        Task { @MainActor in
+            await deletionBatch.waitForCompletion()
+            while downloadBatch.phase == .running {
                 await Task.yield()
             }
+            await DomainManager.signalDeletionChanges()
             await DomainManager.deactivate()
-            NSApplication.shared.terminate(nil)
+            sender.reply(toApplicationShouldTerminate: true)
         }
+        return .terminateLater
     }
 
     // MARK: - Settings window (AppKit-hosted SwiftUI)
@@ -209,8 +243,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @MainActor private func showSettings() {
         NSApp.activate(ignoringOtherApps: true)
         if settingsWindow == nil {
-            let content = ContentView(onClose: { [weak self] in self?.settingsWindow?.close() })
-                .frame(width: 500, height: 720)
+            let content = ContentView(deletionBatch: deletionBatch,
+                                      onClose: { [weak self] in self?.settingsWindow?.close() })
+                .frame(width: 500, height: 780)
             let window = NSWindow(contentViewController: NSHostingController(rootView: content))
             window.title = "Immich Desktop"
             window.styleMask = [.titled, .closable]
@@ -227,7 +262,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         NSApp.activate(ignoringOtherApps: true)
         if galleryWindow == nil {
             let window = NSWindow(contentViewController:
-                NSHostingController(rootView: GalleryView(downloadBatch: downloadBatch)))
+                NSHostingController(rootView: GalleryView(downloadBatch: downloadBatch,
+                                                         deletionBatch: deletionBatch,
+                                                         canStartOperation: { [weak self] in
+                                                             self?.terminationInProgress == false
+                                                         })))
             window.title = "Immich Desktop"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.setContentSize(NSSize(width: 1000, height: 700))
@@ -247,7 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func windowWillClose(_ notification: Notification) {
         if let window = notification.object as? NSWindow, window === galleryWindow {
             // Drop the SwiftUI hierarchy before releasing the window. The
-            // app-owned DownloadBatch remains alive independently of the gallery.
+            // app-owned operation batches remain alive independently of the gallery.
             window.contentViewController = nil
             galleryWindow = nil
         }

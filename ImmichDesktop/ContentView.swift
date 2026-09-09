@@ -2,6 +2,7 @@ import SwiftUI
 import ServiceManagement
 
 struct ContentView: View {
+    @Bindable var deletionBatch: DeletionBatch
     /// Closes the hosting window. Injected by the AppKit status-item controller that
     /// owns the settings window (there is no SwiftUI presentation to `dismiss`).
     var onClose: () -> Void = {}
@@ -29,20 +30,20 @@ struct ContentView: View {
                 TextField("Server URL", text: $serverURL,
                           prompt: Text(verbatim: "http://192.168.1.10:2283"))
                     .textContentType(.URL)
-                    .disabled(busy)
+                    .disabled(busy || deletionBatch.phase == .running)
                 SecureField("API Key", text: $apiKey,
                             prompt: Text("Paste your Immich API key"))
-                    .disabled(busy)
+                    .disabled(busy || deletionBatch.phase == .running)
             } header: {
                 Text("Immich Server")
             }
             Section {
                 HStack {
                     Button("Test Connection") { Task { await test() } }
-                        .disabled(busy)
+                        .disabled(busy || deletionBatch.phase == .running)
                     Button("Save & Activate") { Task { await save() } }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(busy)
+                        .disabled(busy || deletionBatch.phase == .running)
                     if busy { ProgressView().controlSize(.small) }
                     if let result {
                         Text(result == .ok ? "OK" : "Failed")
@@ -84,6 +85,17 @@ struct ContentView: View {
                 Text("Additional Views")
             }
             Section {
+                Toggle("Allow deletions", isOn: $deletionBatch.allowDeletions)
+                    .disabled(busy || deletionBatch.phase == .running)
+                if deletionBatch.permission == .missing {
+                    Text("Deletion is unavailable: this API key needs asset.delete permission.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Gallery deletions")
+            }
+            Section {
                 Toggle("Run on startup", isOn: $runOnStartup)
                     .onChange(of: runOnStartup) { _, v in setRunOnStartup(v) }
             } header: {
@@ -91,7 +103,9 @@ struct ContentView: View {
             }
         }
         .formStyle(.grouped)
+        .disabled(deletionBatch.phase == .running)
         .padding()
+        .task { await deletionBatch.refreshCapabilities() }
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification)) { _ in
             runOnStartup = SMAppService.mainApp.status == .enabled
@@ -143,7 +157,7 @@ struct ContentView: View {
             return
         }
 
-        guard !busy else {
+        guard !busy, deletionBatch.phase != .running else {
             restoreDisplayedGroupingMode(configuredGroupingMode(for: view), for: view)
             return
         }
@@ -233,6 +247,7 @@ struct ContentView: View {
 
     @MainActor
     private func test() async {
+        guard deletionBatch.phase != .running else { return }
         busy = true; result = nil; defer { busy = false }
         guard let client = ImmichClient(serverURL: serverURL, apiKey: apiKey) else {
             result = .failed; return
@@ -240,6 +255,7 @@ struct ContentView: View {
         do {
             _ = try await client.albums()
             result = .ok
+            await deletionBatch.refreshCapabilities()
         } catch {
             result = .failed
         }
@@ -247,8 +263,10 @@ struct ContentView: View {
 
     @MainActor
     private func save() async {
+        guard deletionBatch.phase != .running else { return }
         busy = true; result = nil; defer { busy = false }
         AppConfig.set(serverURL: serverURL, apiKey: apiKey)   // atomically into the App Group container
+        await deletionBatch.refreshCapabilities()
         do {
             try await DomainManager.activate(reset: true)
             AppConfig.completeGroupingModeMigration()

@@ -68,8 +68,53 @@ final class GalleryViewModel {
     /// became stale and must not mutate the new timeline.
     private var generation = 0
 
+    /// Paging is paused during mutations; confirmed deletion shifts every later
+    /// offset page. Restart from page one, deduplicating against surviving rows.
+    private var pagingSuspended = false
+
+    private var pagingNeedsRepair = false
+    var connectionID: String? { client?.connectionID }
+
+    func setPagingSuspended(_ suspended: Bool) {
+        pagingSuspended = suspended
+        guard !suspended, pagingNeedsRepair else { return }
+        pagingNeedsRepair = false
+        if !suspended, let last = assets.last {
+            loadMoreIfNeeded(after: last)
+        } else if !suspended, assets.isEmpty, nextPage != nil, client != nil {
+            let gen = generation
+            Task { await loadFirstPage(forGeneration: gen) }
+        }
+    }
+
+    func removeConfirmedAssets(_ assetIDs: [String]) {
+        guard !assetIDs.isEmpty else { return }
+        let ids = Set(assetIDs)
+        generation += 1
+        isLoadingMore = false
+        removeSelectedAssets(assetIDs)
+        let survivors = assets.filter { !ids.contains($0.id) }
+        assets = []
+        pagingNeedsRepair = true
+        sections = []
+        seenIds = []
+        indexById = [:]
+        sectionIndexByKey = [:]
+        append(survivors, nextPage: 1)
+        phase = assets.isEmpty ? .empty : .loaded
+        yearGroups = []
+        let gen = generation
+        Task {
+            guard let client else { return }
+            let buckets = (try? await client.monthBuckets()) ?? []
+            guard gen == generation else { return }
+            yearGroups = Self.groupBuckets(buckets)
+        }
+    }
+
     func initialLoad() async {
         let loadGeneration = resetList(to: nil)
+        self.client = nil
         guard let client = ImmichClient() else {
             guard loadGeneration == generation else { return }
             phase = .notConfigured
@@ -101,18 +146,29 @@ final class GalleryViewModel {
 
     /// Pagination trigger, called from every cell's `.onAppear`.
     func loadMoreIfNeeded(after asset: ImmichAsset) {
-        guard let page = nextPage, !isLoadingMore, triggerIds.contains(asset.id) else { return }
+        guard !pagingSuspended, let page = nextPage,
+              !isLoadingMore, triggerIds.contains(asset.id) else { return }
         isLoadingMore = true
         let gen = generation
         let anchor = anchor
         Task {
             defer { if gen == generation { isLoadingMore = false } }
             guard let client else { return }
-            // Errors keep `nextPage`, so continued scrolling simply retries.
-            if let result = try? await client.assetsPage(page: page, size: Self.pageSize,
-                                                         takenBefore: anchor),
-               gen == generation {
-                append(result.assets, nextPage: result.nextPage)
+            var candidate: Int? = page
+            // Replaying offset pages after a deletion may contain only already
+            // loaded rows. Continue until reaching new rows or the actual end.
+            while let page = candidate, !pagingSuspended, gen == generation {
+                do {
+                    let result = try await client.assetsPage(
+                        page: page, size: Self.pageSize, takenBefore: anchor)
+                    guard gen == generation else { return }
+                    let previousCount = assets.count
+                    append(result.assets, nextPage: result.nextPage)
+                    if assets.count > previousCount { return }
+                    candidate = result.nextPage
+                } catch {
+                    return // Keep this page retryable; never advance on failure.
+                }
             }
         }
     }
@@ -164,7 +220,7 @@ final class GalleryViewModel {
         pendingSelectionIDs.subtract(ids)
     }
 
-    /// Reconnects retryable Assets from a retained Download batch result. Only
+    /// Reconnects retryable Assets from a retained operation result. Only
     /// Assets already loaded into this timeline are selected immediately; later
     /// pages select matching IDs as they arrive.
     func restoreSelection(for assetIDs: [String]) {
@@ -204,6 +260,7 @@ final class GalleryViewModel {
         sectionIndexByKey = [:]
         nextPage = 1
         isLoadingMore = false
+        pagingNeedsRepair = false
         return generation
     }
 
