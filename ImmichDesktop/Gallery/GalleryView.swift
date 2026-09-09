@@ -79,7 +79,9 @@ struct GalleryView: View {
         // Keep the app-owned batch observable while the gallery is still loading
         // or has temporarily failed to load its timeline.
         .overlay(alignment: .topTrailing) {
-            galleryControls
+            if selectedIndex == nil {
+                galleryControls
+            }
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 0) {
