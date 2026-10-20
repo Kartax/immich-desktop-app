@@ -93,6 +93,9 @@ Gallery uploads continue when its window closes, with progress, cancellation, an
 per-file failures available from the menu-bar app. Retry failed files explicitly;
 temporary transfer failures are retried automatically. Cancellation can leave an
 in-flight request completed on the server and never deletes completed uploads.
+Successful gallery upload results disappear after two seconds; failures and cancelled
+uploads remain available for review. Visible gallery tiles retry thumbnails while
+Immich processes newly uploaded originals, without needing to reopen the gallery.
 No app-managed persistent upload queue or recovery copies are retained; interrupted
 gallery uploads do not resume after relaunch. Finder owns its staging and retries.
 Multipart encoding uses a temporary transport file, removed when the transfer ends;
@@ -107,6 +110,8 @@ Copy prepares all requested originals before replacing the clipboard. Progress a
 transfers and deletion are unavailable during preparation. Failure or cancellation
 leaves the previous clipboard unchanged. If you copy something else while originals
 are being prepared, that newer clipboard content wins.
+Successful copies finish silently, without a confirmation banner; failures and
+cancellation still display a dismissible message.
 
 Right-clicking a selected Asset copies the selection; right-clicking an unselected
 Asset copies only that Asset without changing the selection. Multiple Assets use
@@ -228,6 +233,24 @@ To compile-check from the command line without signing:
 xcodebuild -project ImmichDesktop.xcodeproj -scheme ImmichDesktop \
   -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
 ```
+
+### Clean up development app copies
+
+Repeated builds can leave duplicate ImmichDesktop icons in Launchpad / Apps.
+Preview the registered copies and disposable build artifacts first:
+
+```sh
+./scripts/clean-dev-apps.sh
+./scripts/clean-dev-apps.sh --apply
+# Unregister copies without deleting build artifacts instead:
+./scripts/clean-dev-apps.sh --apply --keep-build-artifacts
+```
+
+`--apply` unregisters copies, deletes registered bundles under `build/`, `tmp/`
+and `.xcarchive` (removing the whole archive), clears matching ImmichDesktop
+DerivedData, and restarts Dock / Apps to refresh their icon lists.
+`/Applications/ImmichDesktop.app` is never touched. This is development-build
+cleanup, not an uninstall or a File Provider domain reset.
 
 ## Notes for a free Apple ID
 

@@ -169,7 +169,6 @@ final class CopyBatch {
                 try? FileManager.default.removeItem(at: previousDirectory)
             }
             startClipboardMonitor()
-            result = "Copied \(snapshot.count) \(snapshot.count == 1 ? "Asset" : "Assets")"
         } catch is CancellationError {
             result = "Copy cancelled"
         } catch {

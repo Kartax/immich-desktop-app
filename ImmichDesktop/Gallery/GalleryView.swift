@@ -219,14 +219,6 @@ struct GalleryView: View {
             if model.selectionCount > 0 || operationRunning {
                 selectionBar
             }
-            if !operationRunning && model.selectionCount == 0 {
-                Label("Drop photos or videos to upload", systemImage: "arrow.up.circle")
-                    .font(.caption)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.regularMaterial, in: Capsule())
-                    .help("Upload original files to All Photos without changing dates or removing local originals.")
-            }
             if model.selectionCount > 0 && !operationRunning {
                 selectionActions
             }
@@ -422,6 +414,16 @@ struct GalleryView: View {
             .padding(14)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .padding(12)
+            .task(id: uploadBatch.revision) {
+                guard uploadBatch.failures.isEmpty, !uploadBatch.wasCancelled else { return }
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                    try Task.checkCancellation()
+                    guard uploadBatch.hasResult, !uploadBatch.isRunning,
+                          uploadBatch.failures.isEmpty, !uploadBatch.wasCancelled else { return }
+                    uploadBatch.dismissResult()
+                } catch {}
+            }
         }
     }
 
@@ -835,8 +837,22 @@ private struct GalleryCell: View {
             .onTapGesture { onOpen() }
             .onHover { isHovering = $0 }
             .task(id: asset.id) {
-                if image == nil {
-                    image = try? await loader.image(for: asset.id)
+                var delay = 1
+                while image == nil && !Task.isCancelled {
+                    do {
+                        image = try await loader.image(for: asset.id)
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        // Newly uploaded originals can appear before Immich has
+                        // generated their thumbnails. Keep visible tiles live.
+                        guard let error = error as? URLError,
+                              [.cannotDecodeContentData, .badServerResponse, .resourceUnavailable]
+                                .contains(error.code) else { return }
+                        do { try await Task.sleep(for: .seconds(delay)) }
+                        catch { return }
+                        delay = min(delay * 2, 30)
+                    }
                 }
             }
     }
