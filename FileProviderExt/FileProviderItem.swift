@@ -121,7 +121,10 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     // MARK: NSFileProviderItem
 
     var capabilities: NSFileProviderItemCapabilities {
-        isFolder ? [.allowsContentEnumerating] : [.allowsReading]
+        if itemIdentifier == ItemID.timeline {
+            return [.allowsContentEnumerating, .allowsAddingSubItems]
+        }
+        return isFolder ? [.allowsContentEnumerating] : [.allowsReading]
     }
 
     var itemVersion: NSFileProviderItemVersion {

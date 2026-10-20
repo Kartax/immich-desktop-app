@@ -298,11 +298,13 @@
           <h2>Connect to your Immich server</h2>
           <p class="tagline" style="font-size:1rem; margin:0;">
             Enter your Immich server URL and an API key, hit <em>Save &amp; Activate</em>,
-            and that's it. No syncing or copying. Your photos and videos are served
-            directly from your Immich server.
+            and that's it. Browsing downloads originals only on demand; uploads go
+            directly to your Immich server without a third-party relay.
             <br/><br/>
             Choose which Finder views to show. All Photos is always organized by year
             and month; Albums, Persons, and Places each have their own grouping mode.
+            Stop or wait for gallery and Finder uploads before changing the connection
+            or rebuilding Finder's hierarchy.
           </p>
         </div>
       </div>
@@ -325,7 +327,7 @@
         </div>
         <div class="feature">
           <h3>Lives in the menu bar</h3>
-          <p>No Dock clutter. A small menu-bar app manages the connection; quit it and Immich disappears from Finder.</p>
+          <p>No Dock clutter. A small menu-bar app manages the connection; Finder remains mounted when it quits so macOS can continue queued transfers independently.</p>
         </div>
       </div>
     </section>
@@ -361,8 +363,44 @@
         <summary>What permissions does the API key need?</summary>
         <p>
           Your Immich API key needs <code>album.read</code>, <code>asset.read</code>,
-          <code>asset.download</code>, <code>asset.view</code>, <code>person.read</code>,
-          and <code>asset.delete</code> for gallery deletion.
+          <code>asset.download</code>, <code>asset.view</code>,
+          with <code>person.read</code> for Persons. Optionally add <code>asset.upload</code>
+          for uploads and <code>asset.delete</code> for gallery deletion. Existing read-only
+          keys keep working for browsing and downloads; upload requests adapt to pre-v3
+          and v3 servers without an additional key-management permission. The minimum
+          server version remains v1.135.0.
+        </p>
+      </details>
+
+      <details>
+        <summary>Can I upload photos and videos?</summary>
+        <p>
+          Drop one or multiple standalone image/video files into the gallery, or
+          drop/copy/move-paste them into Finder's <strong>All Photos</strong> entry point.
+          These are additions only: albums and date folders are not upload destinations,
+          and Finder cannot rename, move, edit, or delete existing library files.
+          Folders, non-media files, Live Photo pairing, and separate XMP sidecars are
+          not supported; server-supported RAW files are accepted.
+        </p>
+        <p>
+          Originals and embedded metadata are transferred unchanged, with no resizing,
+          transcoding, date overrides, or new albums. Immich's normal storage rules and
+          natural date folders apply; there is no separate Uploads hierarchy. Gallery
+          drops and Finder copies preserve local originals. Explicit Finder moves are
+          intended to remove sources only after server confirmation, but native source-unlink
+          timing and date-folder reparenting remain unverified pending the user's runtime
+          validation. This is not a source-preservation guarantee; use copies until validated.
+        </p>
+        <p>
+          Existing non-trashed duplicates count as Already in library; trashed duplicates
+          need attention and are not restored automatically. Gallery progress and per-file
+          failures stay accessible from the menu-bar app after the gallery closes. There
+          is no persistent app-managed upload queue or retained recovery copy; Finder
+          controls its own staging and retries. Stop or wait for unfinished uploads before
+          changing the connection, rebuilding the hierarchy, or removing the Finder domain.
+          macOS's pending-upload set is delayed and omits initial transfers, so a queued
+          initial upload not yet reported to the provider may be invisible to configuration
+          guards. Finish queued Finder work and resolve transfer errors before resetting.
         </p>
       </details>
 

@@ -119,6 +119,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             guard let self else { return }
             do {
                 try await self.cache.withRequest {
+                try await self.refreshUploadHierarchyIfNeeded()
                 if self.container == .workingSet {
                     let items = try await self.cache.workingSetItems()
                     try await self.report(items, to: observer)
@@ -266,6 +267,7 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
             do {
                 try await self.cache.withRequest {
                 try self.checkCancellation()
+                try await self.refreshUploadHierarchyIfNeeded()
                 guard let sequence = self.sequence(from: anchor) else {
                     throw NSFileProviderError(.syncAnchorExpired)
                 }
@@ -280,6 +282,9 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                     throw NSFileProviderError(.syncAnchorExpired)
                 }
 
+                if !changes.folderUpdates.isEmpty {
+                    observer.didUpdate(changes.folderUpdates)
+                }
                 if !changes.updates.isEmpty {
                     observer.didUpdate(changes.updates.map {
                         FileProviderItem(asset: $0.asset, parent: $0.parent)
@@ -319,6 +324,21 @@ final class ItemEnumerator: NSObject, NSFileProviderEnumerator {
                 completionHandler(nil)
             }
         }
+    }
+
+    /// App uploads have no provider creation callback. Consume the canonical
+    /// metadata handoff, never a second source copy or a library-wide scan.
+    private func refreshUploadHierarchyIfNeeded() async throws {
+        guard try await cache.needsUploadHierarchyRefresh() else { return }
+        for asset in try UploadActivity.completedAssets(client: client) {
+            try checkCancellation()
+            // The metadata handoff outlives uploads. A later confirmed app
+            // deletion must never be resurrected by replaying that metadata.
+            if try await cache.needsActiveVerification(assetID: asset.id) { continue }
+            if try await cache.hasAppliedUpload(assetID: asset.id) { continue }
+            _ = try await cache.recordUpload(asset)
+        }
+        try await cache.finishUploadHierarchyRefresh()
     }
 
     private func enumeratePotentiallyGroupedAssets(

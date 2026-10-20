@@ -1,4 +1,5 @@
 import FileProvider
+import UniformTypeIdentifiers
 
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
     private static let maximumConcurrentThumbnailRequests = 8
@@ -220,7 +221,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                               client: client, cache: metadataCache)
     }
 
-    // MARK: - Write operations (unsupported, read-only)
+    // MARK: - Uploads (All Photos only)
 
     func createItem(basedOn itemTemplate: NSFileProviderItem,
                     fields: NSFileProviderItemFields,
@@ -228,10 +229,101 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     options: NSFileProviderCreateItemOptions = [],
                     request: NSFileProviderRequest,
                     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void) -> Progress {
-        completionHandler(nil, [], false,
-                          NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError))
-        return Progress()
+        let progress = Progress(totalUnitCount: 0)
+        progress.kind = .file
+        progress.setUserInfoObject(Progress.FileOperationKind.uploading, forKey: .fileOperationKindKey)
+        guard let client, let metadataCache else {
+            completionHandler(nil, [], false, NSFileProviderError(.notAuthenticated))
+            return progress
+        }
+        let task = Task {
+            do {
+                try Task.checkCancellation()
+                guard itemTemplate.parentItemIdentifier == ItemID.timeline else {
+                    throw Self.uploadRefusal("Files can only be added to All Photos.")
+                }
+                guard let url,
+                      itemTemplate.contentType?.conforms(to: .folder) != true,
+                      itemTemplate.contentType?.conforms(to: .symbolicLink) != true,
+                      itemTemplate.contentType?.conforms(to: .aliasFile) != true,
+                      itemTemplate.symlinkTargetPath == nil else {
+                    throw Self.uploadRefusal("Only standalone image and video files can be uploaded; folders, aliases and symbolic links are not supported.")
+                }
+                let values = try url.resourceValues(forKeys: [
+                    .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .isAliasFileKey
+                ])
+                guard values.isRegularFile == true, values.isDirectory != true,
+                      values.isSymbolicLink != true, values.isAliasFile != true else {
+                    throw Self.uploadRefusal("Only standalone media files can be uploaded.")
+                }
+                let lease = try UploadActivity.begin(client: client)
+                defer { lease.finish() }
+                let result: AssetUploadResult
+                var retryDelay: UInt64 = 1_000_000_000
+                while true {
+                    try Task.checkCancellation()
+                    do {
+                        result = try await metadataCache.withRequest {
+                            try await metadataCache.validateRequest()
+                            return try await client.uploadFile(at: url, filename: itemTemplate.filename,
+                                                               progress: progress)
+                        }
+                        break
+                    } catch {
+                        try Task.checkCancellation()
+                        guard ImmichClient.isTransientUploadError(error) else { throw error }
+                        // Keep both the cross-process lease and macOS-owned
+                        // source until success or cancellation. Backoff is capped,
+                        // not persisted; uncertain attempts deduplicate by checksum.
+                        try await Task.sleep(nanoseconds: retryDelay)
+                        retryDelay = min(retryDelay * 2, 30_000_000_000)
+                    }
+                }
+                // Reconcile the cross-process revision in a new cache request;
+                // publishing it inside the old request would cross its epoch.
+                UploadActivity.recordCompletion(client: client, asset: result.asset)
+                let item = try await metadataCache.withRequest {
+                    try await metadataCache.recordUpload(result.asset)
+                }
+                try Task.checkCancellation()
+                // The canonical name/parent replace the entry-point template.
+                // Duplicate identity also replaces any existing local occurrence;
+                // fetch its canonical original rather than assume local content.
+                completionHandler(item, [], result.alreadyExisted, nil)
+            } catch {
+                completionHandler(nil, [], false, Self.nativeUploadError(error))
+            }
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
     }
+
+    private static func uploadRefusal(_ message: String) -> NSError {
+        NSError(domain: NSFileProviderErrorDomain,
+                code: NSFileProviderError.Code.cannotSynchronize.rawValue,
+                userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private static func nativeUploadError(_ error: Error) -> Error {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
+            return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+        }
+        if ImmichClient.isTransientUploadError(error) {
+            return NSError(domain: NSFileProviderErrorDomain,
+                           code: NSFileProviderError.Code.serverUnreachable.rawValue,
+                           userInfo: [NSLocalizedDescriptionKey: "The server is temporarily unavailable. Finder will retry the upload.",
+                                      NSUnderlyingErrorKey: error])
+        }
+        if case AssetUploadError.rejected(let status, _) = error,
+           status == 401 || status == 403 {
+            return NSFileProviderError(.notAuthenticated)
+        }
+        let native = error as NSError
+        if native.domain == NSFileProviderErrorDomain { return native }
+        return uploadRefusal(error.localizedDescription)
+    }
+
+    // Existing assets remain immutable from Finder.
 
     func modifyItem(_ item: NSFileProviderItem,
                     baseVersion version: NSFileProviderItemVersion,

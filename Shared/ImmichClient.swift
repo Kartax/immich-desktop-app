@@ -15,7 +15,7 @@ struct ImmichClient {
     let baseURL: URL      // ends with .../api
     let apiKey: String
     let configurationVersion: Int
-    private let session: URLSession
+    let session: URLSession
 
     /// A credential-scoped, non-secret journal/cache namespace; never store the key.
     let connectionID: String

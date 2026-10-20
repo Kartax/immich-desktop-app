@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var placeGroupingMode = AppConfig.placeGroupingMode
     @State private var restoringGroupingViews: Set<AdditionalView> = []
     @State private var groupingUpdateFailed = false
+    @State private var configurationError: String?
     @State private var runOnStartup = SMAppService.mainApp.status == .enabled
 
     private enum Result { case ok, failed }
@@ -50,6 +51,14 @@ struct ContentView: View {
                             .font(.callout.weight(.medium))
                             .foregroundStyle(result == .ok ? Color.green : Color.red)
                     }
+                }
+                Text("Stop or wait for gallery and Finder uploads before changing the connection or rebuilding Finder views.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let configurationError {
+                    Text(configurationError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
             Section {
@@ -167,24 +176,36 @@ struct ContentView: View {
 
         busy = true
         result = nil
+        configurationError = nil
         groupingUpdateFailed = false
-        setGroupingMode(mode, for: view)
-
-        guard AppConfig.isConfigured else {
-            busy = false
-            return
-        }
 
         do {
-            try await DomainManager.activate(reset: true)
-            AppConfig.completeGroupingModeMigration()
+            guard !UploadActivity.hasActiveTransfers else {
+                configurationError = "Stop or wait for gallery and Finder uploads before changing Finder grouping."
+                restoreDisplayedGroupingMode(previousMode, for: view)
+                busy = false
+                return
+            }
+            let lease = try UploadActivity.beginConfigurationChange()
+            defer { lease.finish() }
+            try await DomainManager.ensureNoPendingUploads()
+            setGroupingMode(mode, for: view)
+            guard AppConfig.isConfigured else {
+                busy = false
+                return
+            }
+            do {
+                try await DomainManager.activate(reset: true, configurationLease: lease)
+                AppConfig.completeGroupingModeMigration()
+            } catch {
+                setGroupingMode(previousMode, for: view)
+                throw error
+            }
         } catch {
             fpLog.error(
                 "Grouping setting update failed: \(error.localizedDescription, privacy: .public)"
             )
-            // Keep the UI and shared configuration consistent with the hierarchy
-            // that Finder still has when rebuilding its backing store fails.
-            setGroupingMode(previousMode, for: view)
+            configurationError = error.localizedDescription
             restoreDisplayedGroupingMode(previousMode, for: view)
             groupingUpdateFailed = true
         }
@@ -264,11 +285,19 @@ struct ContentView: View {
     @MainActor
     private func save() async {
         guard deletionBatch.phase != .running else { return }
-        busy = true; result = nil; defer { busy = false }
-        AppConfig.set(serverURL: serverURL, apiKey: apiKey)   // atomically into the App Group container
-        await deletionBatch.refreshCapabilities()
+        busy = true; result = nil; configurationError = nil
+        defer { busy = false }
+        guard !UploadActivity.hasActiveTransfers else {
+            configurationError = "Stop or wait for gallery and Finder uploads before changing the connection."
+            return
+        }
         do {
-            try await DomainManager.activate(reset: true)
+            let lease = try UploadActivity.beginConfigurationChange()
+            defer { lease.finish() }
+            try await DomainManager.ensureNoPendingUploads()
+            AppConfig.set(serverURL: serverURL, apiKey: apiKey)
+            await deletionBatch.refreshCapabilities()
+            try await DomainManager.activate(reset: true, configurationLease: lease)
             AppConfig.completeGroupingModeMigration()
             await ConnectionMonitor.shared.check()   // refresh the menu bar icon right away
             result = .ok
@@ -276,6 +305,7 @@ struct ContentView: View {
             onClose()
         } catch {
             result = .failed
+            configurationError = error.localizedDescription
         }
     }
 }

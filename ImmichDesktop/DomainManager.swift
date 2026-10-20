@@ -3,6 +3,70 @@ import OSLog
 
 /// Manages the lifecycle of the Immich File Provider domain.
 enum DomainManager {
+    private enum PendingUploadError: LocalizedError {
+        case unfinished
+
+        var errorDescription: String? {
+            "Finish or resolve pending Finder uploads before changing the connection, rebuilding Finder views, or removing the Finder domain."
+        }
+    }
+
+    private final class PendingUploadObserver: NSObject, NSFileProviderEnumerationObserver {
+        private let enumerator: NSFileProviderPendingSetEnumerator
+        private var continuation: CheckedContinuation<Bool, Error>?
+        private var foundUpload = false
+
+        init(enumerator: NSFileProviderPendingSetEnumerator) {
+            self.enumerator = enumerator
+        }
+
+        func hasPendingUploads() async throws -> Bool {
+            defer { enumerator.invalidate() }
+            return try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                enumerator.enumerateItems(for: self, startingAt: NSFileProviderPage(rawValue: Data()))
+            }
+        }
+
+        func didEnumerate(_ updatedItems: [NSFileProviderItem]) {
+            foundUpload = foundUpload || updatedItems.contains {
+                $0.isUploaded != true || $0.isUploading == true || $0.uploadingError != nil
+            }
+        }
+
+        func finishEnumerating(upTo nextPage: NSFileProviderPage?) {
+            if !foundUpload, let nextPage {
+                enumerator.enumerateItems(for: self, startingAt: nextPage)
+                return
+            }
+            let completion = continuation
+            continuation = nil
+            completion?.resume(returning: foundUpload)
+        }
+
+        func finishEnumeratingWithError(_ error: Error) {
+            let completion = continuation
+            continuation = nil
+            completion?.resume(throwing: error)
+        }
+    }
+
+    /// Call while holding the configuration lease, before writing configuration.
+    /// The system's pending set complements active-transfer locking, but omits
+    /// initial transfers and can lag queued changes; it is not a complete queue.
+    static func ensureNoPendingUploads() async throws {
+        let registeredDomains = try await NSFileProviderManager.domains()
+        for registeredDomain in registeredDomains {
+            guard let manager = NSFileProviderManager(for: registeredDomain) else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            let observer = PendingUploadObserver(enumerator: manager.enumeratorForPendingItems())
+            if try await observer.hasPendingUploads() {
+                throw PendingUploadError.unfinished
+            }
+        }
+    }
+
     private actor LifecycleQueue {
         private var tail = Task<Void, Never> {}
         private var acceptsActivations = true
@@ -47,8 +111,18 @@ enum DomainManager {
     ///   before re-adding — this clears the cache and any stale "signed out" state, so
     ///   the same identifier can be reused without resurrecting the stuck state. Use
     ///   after changing the configuration.
-    static func activate(reset: Bool) async throws {
+    static func activate(
+        reset: Bool,
+        configurationLease: UploadActivity.Lease? = nil
+    ) async throws {
+        // Exclude uploads across both configuration writes (when the caller owns
+        // the lease) and every removal, including legacy-domain cleanup on launch.
+        let lease = try configurationLease ?? UploadActivity.beginConfigurationChange()
+        defer {
+            if configurationLease == nil { lease.finish() }
+        }
         try await lifecycleQueue.activate {
+            try await ensureNoPendingUploads()
             try await performActivation(reset: reset)
         }
     }
@@ -146,6 +220,23 @@ enum DomainManager {
         }
     }
 
+    /// Wakes Finder after completed gallery uploads without rebuilding its domain.
+    static func signalUploadChanges() async {
+        guard let manager = NSFileProviderManager(for: domain) else { return }
+        // ItemID belongs to the extension target; use its documented timeline ID.
+        let containers: [NSFileProviderItemIdentifier] = [
+            .rootContainer, NSFileProviderItemIdentifier("timeline"), .workingSet
+        ]
+        for container in containers {
+            do {
+                try await manager.signalEnumerator(for: container)
+            } catch {
+                Logger(subsystem: AppConfig.domainIdentifier, category: "Upload")
+                    .error("Finder upload wake remains pending: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     /// Returns the Finder-visible location of the Immich domain root.
     static func userVisibleRootURL() async throws -> URL {
         guard let manager = NSFileProviderManager(for: domain) else {
@@ -156,6 +247,15 @@ enum DomainManager {
 
     /// Removes all of this app's domains so Immich disappears from Finder.
     static func deactivate() async {
+        let lease: UploadActivity.Lease
+        do {
+            lease = try UploadActivity.beginConfigurationChange()
+            try await ensureNoPendingUploads()
+        } catch {
+            fpLog.error("Finder remains active: stop or wait for uploads before removing its domain. \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        defer { lease.finish() }
         await lifecycleQueue.deactivate {
             let existing = (try? await NSFileProviderManager.domains()) ?? []
             for d in existing {

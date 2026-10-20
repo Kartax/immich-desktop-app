@@ -31,6 +31,7 @@ actor AssetMetadataCache {
 
     struct ChangeBatch {
         let updates: [CachedUpdate]
+        let folderUpdates: [FileProviderItem]
         let deletedIdentifiers: [NSFileProviderItemIdentifier]
         let anchor: Int64
         let moreComing: Bool
@@ -47,6 +48,7 @@ actor AssetMetadataCache {
         let parent: String
         let asset: ImmichAsset?
         let deleted: String?
+        var folder: String? = nil
     }
 
     private struct State: Codable {
@@ -62,6 +64,9 @@ actor AssetMetadataCache {
         var minimumSequence: Int64 = 1
         var lastDeletionSequence: Int64 = 0
         var pendingSignals: Set<String> = []
+        var uploadRevision: String? = nil
+        var uploadHierarchyRevision: String? = nil
+        var appliedUploadAssetIDs: Set<String>? = nil
     }
 
     @TaskLocal private static var requestEpoch: String?
@@ -150,6 +155,27 @@ actor AssetMetadataCache {
             } else {
                 try commit(importLegacyOccurrences())
             }
+        }
+        let uploadRevision = UploadActivity.revision
+        if state!.uploadRevision == nil && uploadRevision.isEmpty {
+            var next = state!
+            next.uploadRevision = uploadRevision
+            try commit(next)
+        } else if state!.uploadRevision != uploadRevision {
+            var next = state!
+            next.uploadRevision = uploadRevision
+            next.snapshots.removeAll()
+            next.drafts.removeAll()
+            next.epoch = UUID().uuidString
+            next.sequence += 1
+            next.lastDeletionSequence = next.sequence
+            next.pendingSignals.formUnion(next.containers)
+            next.pendingSignals.formUnion([
+                NSFileProviderItemIdentifier.rootContainer.rawValue,
+                ItemID.timeline.rawValue,
+                NSFileProviderItemIdentifier.workingSet.rawValue
+            ])
+            try commit(next)
         }
         let records = try journal.confirmedDeletions(connectionID: connectionID)
         let pending = records.filter { !state!.receipts.contains($0.id) }
@@ -311,6 +337,62 @@ actor AssetMetadataCache {
         try commit(next)
     }
 
+    /// The server-confirmed identity lives in its natural timeline month. Publish
+    /// ancestors before the file so the working set can materialize a new path.
+    func recordUpload(_ asset: ImmichAsset) throws -> FileProviderItem {
+        var next = try checkedState()
+        let month = ItemEnumerator.monthKey(for: asset)
+        guard month != "unknown" else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let year = String(month.prefix(4))
+        let folders: [FileProviderItem] = [
+            .timelineFolder(), .yearFolder(year),
+            .monthFolder(value: month, display: TimelineFormat.monthDisplay(month))
+        ]
+        for folder in folders {
+            if !next.containers.contains(folder.itemIdentifier.rawValue) {
+                next.sequence += 1
+                next.changes.append(Change(sequence: next.sequence,
+                                           parent: folder.parentItemIdentifier.rawValue,
+                                           asset: nil, deleted: nil,
+                                           folder: folder.itemIdentifier.rawValue))
+            }
+            rememberContainer(folder.itemIdentifier, in: &next)
+            next.pendingSignals.insert(folder.parentItemIdentifier.rawValue)
+        }
+        let item = FileProviderItem(asset: asset, parent: ItemID.month(month))
+        if next.occurrences[item.itemIdentifier.rawValue]?.asset != asset {
+            next.sequence += 1
+            next.changes.append(Change(sequence: next.sequence,
+                                       parent: item.parentItemIdentifier.rawValue,
+                                       asset: asset, deleted: nil))
+            next.occurrences[item.itemIdentifier.rawValue] = Occurrence(
+                parent: item.parentItemIdentifier.rawValue, asset: asset)
+        }
+        next.pendingSignals.insert(item.parentItemIdentifier.rawValue)
+        next.pendingSignals.insert(NSFileProviderItemIdentifier.workingSet.rawValue)
+        next.appliedUploadAssetIDs = (next.appliedUploadAssetIDs ?? []).union([asset.id])
+        try commit(next)
+        return item
+    }
+
+    func needsUploadHierarchyRefresh() throws -> Bool {
+        let state = try checkedState()
+        return !(state.uploadRevision ?? "").isEmpty
+            && state.uploadHierarchyRevision != state.uploadRevision
+    }
+
+    func hasAppliedUpload(assetID: String) throws -> Bool {
+        try checkedState().appliedUploadAssetIDs?.contains(assetID) == true
+    }
+
+    func finishUploadHierarchyRefresh() throws {
+        var next = try checkedState()
+        next.uploadHierarchyRevision = next.uploadRevision
+        try commit(next)
+    }
+
     /// Called before exposing ANY item to fileproviderd, not only on final pages.
     /// Thus grouped projections and incomplete drafts cannot lose known aliases.
     func record(_ items: [FileProviderItem], in container: NSFileProviderItemIdentifier,
@@ -389,8 +471,30 @@ actor AssetMetadataCache {
     }
 
     func workingSetItems() throws -> [FileProviderItem] {
-        try checkedState().occurrences.values.map {
+        let state = try checkedState()
+        let folders = state.containers.compactMap(Self.uploadFolder).sorted {
+            func depth(_ item: FileProviderItem) -> Int {
+                switch ItemID(item.itemIdentifier).kind {
+                case .timeline: return 0
+                case .year: return 1
+                default: return 2
+                }
+            }
+            return depth($0) < depth($1)
+        }
+        return folders + state.occurrences.values.map {
             FileProviderItem(asset: $0.asset, parent: NSFileProviderItemIdentifier(rawValue: $0.parent))
+        }
+    }
+
+    private static func uploadFolder(_ raw: String) -> FileProviderItem? {
+        let id = ItemID(NSFileProviderItemIdentifier(rawValue: raw))
+        switch id.kind {
+        case .timeline: return .timelineFolder()
+        case .year: return .yearFolder(id.value)
+        case .month:
+            return .monthFolder(value: id.value, display: TimelineFormat.monthDisplay(id.value))
+        default: return nil
         }
     }
 
@@ -405,8 +509,8 @@ actor AssetMetadataCache {
         // refreshes them. Working set retains explicit per-occurrence deletions.
         if anchor < state.minimumSequence - 1 || anchor > state.sequence
             || (container != .workingSet && anchor < state.lastDeletionSequence) {
-            return ChangeBatch(updates: [], deletedIdentifiers: [], anchor: state.sequence,
-                               moreComing: false, anchorExpired: true)
+            return ChangeBatch(updates: [], folderUpdates: [], deletedIdentifiers: [],
+                               anchor: state.sequence, moreComing: false, anchorExpired: true)
         }
         let relevant = state.changes.filter {
             $0.sequence > anchor && (container == .workingSet || $0.parent == container.rawValue)
@@ -416,13 +520,16 @@ actor AssetMetadataCache {
         // deletion (or vice versa) when the observer receives separate callbacks.
         var latest: [String: Change] = [:]
         for change in selected {
-            let raw = change.deleted ?? ItemID.asset(change.asset!.id,
+            let raw = change.deleted ?? change.folder ?? ItemID.asset(change.asset!.id,
                 parent: NSFileProviderItemIdentifier(rawValue: change.parent)).rawValue
             latest[raw] = change
         }
         let more = relevant.count > selected.count
         return ChangeBatch(updates: latest.values.compactMap { change in
             change.asset.map { CachedUpdate(parent: NSFileProviderItemIdentifier(rawValue: change.parent), asset: $0) }
+        }, folderUpdates: selected.compactMap { change in
+            guard let raw = change.folder, latest[raw]?.sequence == change.sequence else { return nil }
+            return Self.uploadFolder(raw)
         }, deletedIdentifiers: latest.values.compactMap { $0.deleted.map(NSFileProviderItemIdentifier.init(rawValue:)) },
         anchor: more ? selected.last!.sequence : state.sequence, moreComing: more, anchorExpired: false)
     }

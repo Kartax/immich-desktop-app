@@ -21,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var galleryWindow: NSWindow?
     private let downloadBatch = DownloadBatch()
     private let deletionBatch = DeletionBatch()
+    private let uploadBatch = UploadBatch()
+    private var uploadStatusMenuItem: NSMenuItem?
     private var domainActivationTask: Task<Void, Never>?
     private var terminationInProgress = false
 
@@ -40,12 +42,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         // Re-mount Immich in Finder automatically if it has been configured before,
         // so launching the app brings the integration back without re-activating.
         if AppConfig.isConfigured {
-            let migratedGroupingModes = AppConfig.migrateGroupingModesIfNeeded()
             domainActivationTask = Task {
                 do {
-                    try await DomainManager.activate(reset: migratedGroupingModes)
-                    if migratedGroupingModes {
-                        AppConfig.completeGroupingModeMigration()
+                    // A previous app instance may have left Finder working. Do
+                    // not migrate layout preferences beneath those transfers.
+                    if let lease = try? UploadActivity.beginConfigurationChange() {
+                        defer { lease.finish() }
+                        try await DomainManager.ensureNoPendingUploads()
+                        let migrated = AppConfig.migrateGroupingModesIfNeeded()
+                        try await DomainManager.activate(reset: migrated, configurationLease: lease)
+                        if migrated { AppConfig.completeGroupingModeMigration() }
+                    } else {
+                        try await DomainManager.activate(reset: false)
                     }
                 } catch {
                     fpLog.error(
@@ -69,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         UpdateChecker.shared.start()
         trackStatusState()
         trackDeletionState()
+        trackUploadState()
+        trackUploadCompletions()
     }
 
     /// Keep the app alive when the settings window is closed (it's a menu bar app).
@@ -126,16 +136,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    private func trackUploadState() {
+        withObservationTracking {
+            _ = uploadBatch.isRunning
+            _ = uploadBatch.currentFilename
+            _ = uploadBatch.fractionCompleted
+            _ = uploadBatch.retrying
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.trackUploadState()
+                self.statusItem.button?.toolTip = self.uploadBatch.isRunning
+                    ? self.uploadBatch.summary : nil
+                self.uploadStatusMenuItem?.title = self.uploadBatch.summary
+            }
+        }
+    }
+
+    private func trackUploadCompletions() {
+        withObservationTracking {
+            _ = uploadBatch.revision
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.trackUploadCompletions()
+                await DomainManager.signalUploadChanges()
+            }
+        }
+    }
+
     // MARK: - Menu (rebuilt each time it opens, so the update state is current)
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        uploadStatusMenuItem = nil
 
         let version = menu.addItem(withTitle: "Immich Desktop \(Self.versionString)",
                                    action: nil, keyEquivalent: "")
         version.isEnabled = false
 
         addUpdateItems(to: menu)
+        addUploadItems(to: menu)
 
         menu.addItem(.separator())
         // Always enabled — the gallery itself renders a "not configured" state.
@@ -171,6 +212,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    private func addUploadItems(to menu: NSMenu) {
+        guard uploadBatch.isRunning || uploadBatch.hasResult else { return }
+        menu.addItem(.separator())
+        uploadStatusMenuItem = menu.addItem(withTitle: uploadBatch.summary, action: nil, keyEquivalent: "")
+        uploadStatusMenuItem?.isEnabled = false
+        if uploadBatch.isRunning {
+            menu.addItem(withTitle: "Stop Uploads", action: #selector(stopUploads), keyEquivalent: "").target = self
+        } else {
+            if uploadBatch.canRetry {
+                menu.addItem(withTitle: "Retry Failed Files", action: #selector(retryUploads), keyEquivalent: "").target = self
+            }
+            menu.addItem(withTitle: "Dismiss Upload Result", action: #selector(dismissUploads), keyEquivalent: "").target = self
+        }
+        if !uploadBatch.failures.isEmpty {
+            let item = menu.addItem(withTitle: "Upload Failures (\(uploadBatch.failures.count))", action: nil, keyEquivalent: "")
+            let failures = NSMenu()
+            for failure in uploadBatch.failures {
+                failures.addItem(withTitle: "\(failure.filename): \(failure.message)", action: nil, keyEquivalent: "").isEnabled = false
+            }
+            item.submenu = failures
+        }
+    }
+
+    @objc private func stopUploads() { uploadBatch.cancel() }
+    @objc private func retryUploads() {
+        guard !terminationInProgress, deletionBatch.phase != .running,
+              downloadBatch.phase != .running else { return }
+        uploadBatch.retryFailures()
+    }
+    @objc private func dismissUploads() { uploadBatch.dismissResult() }
+
     // MARK: - Menu actions
 
     @objc private func openSettings() {
@@ -203,6 +275,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationInProgress else { return .terminateLater }
+        if uploadBatch.isRunning {
+            let alert = NSAlert()
+            alert.messageText = "Uploads in progress"
+            alert.informativeText = "Completed assets remain in your library. Unfinished gallery uploads will stop and will not resume after relaunch. A request already sent may still complete on the server. Finder transfers continue independently."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Keep Uploading")
+            alert.addButton(withTitle: "Quit and Stop Uploads").hasDestructiveAction = true
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+            uploadBatch.cancel()
+        }
         if deletionBatch.phase == .running {
             let alert = NSAlert()
             alert.messageText = "Deletion in progress"
@@ -227,12 +309,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         terminationInProgress = true
         Task { @MainActor in
+            await uploadBatch.waitForCompletion()
             await deletionBatch.waitForCompletion()
             while downloadBatch.phase == .running {
                 await Task.yield()
             }
             await DomainManager.signalDeletionChanges()
-            await DomainManager.deactivate()
+            await DomainManager.signalUploadChanges()
+            // Keep the domain mounted: macOS owns unfinished Finder work and
+            // may start its next transfer after this process has exited.
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -264,6 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             let window = NSWindow(contentViewController:
                 NSHostingController(rootView: GalleryView(downloadBatch: downloadBatch,
                                                          deletionBatch: deletionBatch,
+                                                         uploadBatch: uploadBatch,
                                                          canStartOperation: { [weak self] in
                                                              self?.terminationInProgress == false
                                                          })))

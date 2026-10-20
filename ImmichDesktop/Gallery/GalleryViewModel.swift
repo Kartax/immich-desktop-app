@@ -64,6 +64,7 @@ final class GalleryViewModel {
     private var indexById: [String: Int] = [:]
     private var sectionIndexByKey: [String: Int] = [:]
     private var client: ImmichClient?
+    private var consumedUploadIDs = Set<String>()
     /// Bumped on every reset so in-flight page and bucket loads can detect they
     /// became stale and must not mutate the new timeline.
     private var generation = 0
@@ -90,6 +91,7 @@ final class GalleryViewModel {
     func removeConfirmedAssets(_ assetIDs: [String]) {
         guard !assetIDs.isEmpty else { return }
         let ids = Set(assetIDs)
+        consumedUploadIDs.formUnion(ids)
         generation += 1
         isLoadingMore = false
         removeSelectedAssets(assetIDs)
@@ -112,6 +114,52 @@ final class GalleryViewModel {
         }
     }
 
+    /// Merge exact completion metadata into the loaded date window, without
+    /// fetching timeline pages or moving navigation. Offset repair stays lazy.
+    func mergeUploadedAssets(_ uploaded: [ImmichAsset] = []) async {
+        guard let client, !pagingSuspended else { return }
+        switch phase {
+        case .loaded, .empty: await mergeCompletions(uploaded, client: client)
+        default: return
+        }
+    }
+
+    private func mergeCompletions(_ uploaded: [ImmichAsset], client: ImmichClient) async {
+        generation += 1
+        let gen = generation
+        isLoadingMore = false
+        let windowAnchor = anchor
+        let oldestDate = assets.last?.fileCreatedAt
+        let candidates = (uploaded + ((try? UploadActivity.completedAssets(client: client)) ?? []))
+            .filter { !consumedUploadIDs.contains($0.id) }
+        guard !candidates.isEmpty else { return }
+        consumedUploadIDs.formUnion(candidates.map(\.id))
+        let repairPage = nextPage.map { max(1, $0 - 1) }
+            ?? max(1, (assets.count + Self.pageSize - 1) / Self.pageSize)
+        var merged = Dictionary(uniqueKeysWithValues: assets.map { ($0.id, $0) })
+        for asset in candidates {
+            let date = asset.fileCreatedAt
+            if let windowAnchor, let date, date >= windowAnchor { continue }
+            if let oldestDate, let date, date < oldestDate { continue }
+            merged[asset.id] = asset
+        }
+        let ordered = merged.values.sorted {
+            let lhs = $0.fileCreatedAt ?? ""
+            let rhs = $1.fileCreatedAt ?? ""
+            return lhs == rhs ? $0.id < $1.id : lhs > rhs
+        }
+        assets = []
+        sections = []
+        seenIds = []
+        indexById = [:]
+        sectionIndexByKey = [:]
+        append(ordered, nextPage: repairPage)
+        phase = assets.isEmpty ? .empty : .loaded
+        let buckets = try? await client.monthBuckets()
+        guard gen == generation else { return }
+        if let buckets { yearGroups = Self.groupBuckets(buckets) }
+    }
+
     func initialLoad() async {
         let loadGeneration = resetList(to: nil)
         self.client = nil
@@ -121,6 +169,9 @@ final class GalleryViewModel {
             return
         }
         self.client = client
+        // The server load is authoritative for historical handoff records.
+        // Capture before suspending so uploads completed during the load remain new.
+        consumedUploadIDs = Set(((try? UploadActivity.completedAssets(client: client)) ?? []).map(\.id))
         guard loadGeneration == generation else { return }
         phase = .loading
         // The buckets feed only the jump menu — fetched alongside page 1, and a
@@ -130,6 +181,7 @@ final class GalleryViewModel {
         let groups = Self.groupBuckets((try? await buckets) ?? [])
         guard loadGeneration == generation else { return }
         yearGroups = groups
+        await mergeUploadedAssets()
     }
 
     /// Re-anchors the timeline at the given month ("2024-03"); nil returns to the

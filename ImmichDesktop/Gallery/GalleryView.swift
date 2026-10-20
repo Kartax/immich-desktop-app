@@ -1,24 +1,35 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// The "All Photos" gallery window: a lazily-paged thumbnail grid with month
 /// sections, plus an in-window enlarged view (`AssetDetailView`) on click.
 struct GalleryView: View {
     let downloadBatch: DownloadBatch
     let deletionBatch: DeletionBatch
+    let uploadBatch: UploadBatch
     let canStartOperation: () -> Bool
 
     @State private var model: GalleryViewModel
     @State private var loader = ThumbnailLoader()
-    @State private var selectedIndex: Int?
+    @State private var selectedAssetID: String?
+    @State private var scrollPosition: String?
+    @State private var uploadRevision = ""
+    private var selectedIndex: Int? {
+        get { selectedAssetID.flatMap { id in model.assets.firstIndex { $0.id == id } } }
+        nonmutating set {
+            selectedAssetID = newValue.flatMap { model.assets.indices.contains($0) ? model.assets[$0].id : nil }
+        }
+    }
     @State private var actionPending = false
     @State private var isVisible = false
     @State private var appliedDeletionIDs = Set<String>()
 
-    init(downloadBatch: DownloadBatch, deletionBatch: DeletionBatch,
+    init(downloadBatch: DownloadBatch, deletionBatch: DeletionBatch, uploadBatch: UploadBatch,
          canStartOperation: @escaping () -> Bool) {
         self.downloadBatch = downloadBatch
         self.deletionBatch = deletionBatch
+        self.uploadBatch = uploadBatch
         self.canStartOperation = canStartOperation
         _model = State(initialValue: GalleryViewModel())
     }
@@ -38,7 +49,7 @@ struct GalleryView: View {
                 ContentUnavailableView {
                     Label("No Assets", systemImage: "photo.on.rectangle")
                 } description: {
-                    Text("No Assets found.")
+                    Text("Drop image or video files here to upload originals to your Immich library.")
                 } actions: {
                     if model.anchor != nil {
                         Button("Show Latest") { jump(toMonth: nil) }
@@ -87,6 +98,7 @@ struct GalleryView: View {
             VStack(spacing: 0) {
                 downloadResultBanner
                 deletionResultBanner
+                uploadResultBanner
             }
         }
         .task {
@@ -95,6 +107,22 @@ struct GalleryView: View {
             await loadInitialGallery()
         }
         .onDisappear { isVisible = false }
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
+            guard canStartOperation(), deletionBatch.phase != .running,
+                  downloadBatch.phase != .running else { return false }
+            return uploadBatch.start(providers: providers)
+        }
+        .task {
+            uploadRevision = UploadActivity.revision
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                let revision = UploadActivity.revision
+                guard revision != uploadRevision, !operationRunning else { continue }
+                await model.mergeUploadedAssets(
+                    uploadBatch.connectionID == model.connectionID ? uploadBatch.uploadedAssets : [])
+                uploadRevision = revision
+            }
+        }
         .onChange(of: deletionBatch.connectionID) { _, _ in
             guard model.connectionID != deletionBatch.connectionID else { return }
             selectedIndex = nil
@@ -149,6 +177,7 @@ struct GalleryView: View {
                         }
                     }
                 }
+                .scrollTargetLayout()
                 if model.isLoadingMore {
                     ProgressView()
                         .controlSize(.small)
@@ -156,12 +185,21 @@ struct GalleryView: View {
                 }
             }
         }
+        .scrollPosition(id: $scrollPosition)
     }
 
     private var galleryControls: some View {
         HStack(spacing: 8) {
             if model.selectionCount > 0 || operationRunning {
                 selectionBar
+            }
+            if !operationRunning && model.selectionCount == 0 {
+                Label("Drop photos or videos to upload", systemImage: "arrow.up.circle")
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+                    .help("Upload original files to All Photos without changing dates or removing local originals.")
             }
             if model.selectionCount > 0 && !operationRunning {
                 selectionActions
@@ -175,7 +213,10 @@ struct GalleryView: View {
 
     private var selectionBar: some View {
         HStack(spacing: 8) {
-            if downloadBatch.phase == .running {
+            if uploadBatch.isRunning {
+                Text(uploadBatch.summary).lineLimit(1)
+                Button("Stop") { uploadBatch.cancel() }.buttonStyle(.plain)
+            } else if downloadBatch.phase == .running {
                 Text(downloadProgressText)
                     .monospacedDigit()
                 Button {
@@ -264,11 +305,11 @@ struct GalleryView: View {
     }
 
     private var operationRunning: Bool {
-        downloadBatch.phase == .running || deletionBatch.phase == .running
+        downloadBatch.phase == .running || deletionBatch.phase == .running || uploadBatch.isRunning
     }
 
     private var operationsIdle: Bool {
-        canStartOperation() && downloadBatch.phase == .idle && deletionBatch.phase == .idle
+        canStartOperation() && downloadBatch.phase == .idle && deletionBatch.phase == .idle && !uploadBatch.isRunning
     }
 
     /// Year → month menu that re-anchors the timeline (no intervening pages are
@@ -297,6 +338,31 @@ struct GalleryView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(operationRunning || actionPending)
+    }
+
+    @ViewBuilder
+    private var uploadResultBanner: some View {
+        if uploadBatch.hasResult {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(uploadBatch.summary).font(.headline)
+                if !uploadBatch.failures.isEmpty {
+                    resultSection(title: "Failed files") {
+                        ForEach(uploadBatch.failures) { failure in
+                            Text("\(failure.filename): \(failure.message)")
+                        }
+                    }
+                }
+                HStack {
+                    Button("Retry Failed Files") { uploadBatch.retryFailures() }
+                        .disabled(!uploadBatch.canRetry || !canStartOperation() || operationRunning)
+                    Button("Dismiss") { uploadBatch.dismissResult() }
+                }
+            }
+            .frame(maxWidth: 620, alignment: .leading)
+            .padding(14)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .padding(12)
+        }
     }
 
     @ViewBuilder

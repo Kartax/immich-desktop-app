@@ -11,8 +11,9 @@ you to attach a file). Albums and a date-based timeline appear as folders; the
 original files are downloaded **on demand**, only when you actually open or select
 them.
 
-Finder is read-only. The gallery can optionally delete Assets from your Immich
-library after you enable **Allow deletions** in Settings.
+Add original photos and videos through gallery drops or Finder's **All Photos**
+entry point. Finder does not allow editing or deleting existing library files.
+The gallery can optionally delete Assets after you enable **Allow deletions** in Settings.
 
 **Download & info:** https://kartax.github.io/immich-desktop-app/ — a notarized
 `.dmg` for macOS 14+. This repo holds everything: the source, the download page
@@ -37,6 +38,9 @@ library after you enable **Allow deletions** in Settings.
 - Select one or more gallery Assets to **Download** their originals to a folder,
   or **Delete** them from the Immich library when deletion is enabled. Result banners
   disappear after five seconds, or immediately using the **×** at the top right.
+- Drop one or multiple image/video files onto the gallery, or drop/copy/move-paste
+  them into Finder's **All Photos** entry point to upload into your existing library.
+  See the validation limits below before relying on Finder moves.
 
 ## Finder structure
 
@@ -61,6 +65,36 @@ a month's assets are loaded via `POST /search/metadata` (date range, paginated,
 The optional bracketed levels follow the grouping mode selected independently for
 Albums, Persons, and Places. Assets without a usable date appear directly inside a
 single **Unknown Date** folder when grouping is active.
+
+### Uploading originals
+
+Drop one or multiple standalone image/video files into the gallery or into the
+**All Photos** entry point in Finder; Finder copy/paste and move-paste use the same
+addition-only destination. Other folders, including date folders and albums, do
+not accept uploads. Folders and non-media files are rejected. Server-supported RAW
+files are accepted; Live Photo pairing and separate XMP sidecars are not supported.
+
+Uploads send originals unchanged, preserving embedded metadata without resizing,
+transcoding, stripping location, overriding dates, or creating albums. Immich's
+normal storage rules apply. Completed Assets belong in their natural date folders,
+not a separate Uploads hierarchy. Gallery drops and Finder copies keep local
+originals. Explicit Finder moves are intended to remove the source only after
+server confirmation, but **native Finder source-unlink timing and date-folder
+reparenting remain unverified pending the user's runtime validation**. This is not
+a source-preservation guarantee; use copies until that behavior is validated.
+
+Existing non-trashed duplicates count as **Already in library**. Trashed duplicates
+need attention and are not automatically restored or accepted as successful moves.
+Gallery uploads continue when its window closes, with progress, cancellation, and
+per-file failures available from the menu-bar app. Retry failed files explicitly;
+temporary transfer failures are retried automatically. Cancellation can leave an
+in-flight request completed on the server and never deletes completed uploads.
+No app-managed persistent upload queue or recovery copies are retained; interrupted
+gallery uploads do not resume after relaunch. Finder owns its staging and retries.
+Multipart encoding uses a temporary transport file, removed when the transfer ends;
+large videos therefore require additional free local disk space during upload.
+Stop or wait for unfinished gallery and Finder transfers before changing the server,
+API key, grouping hierarchy, or removing the Finder domain.
 
 ### Deleting Assets from the gallery
 
@@ -87,10 +121,11 @@ while a retry confirmation is open.
 If a response is lost or the app is interrupted, uncertain deletions are never
 automatically replayed. Check Immich if the app cannot establish the outcome.
 
-Finder remains read-only even when gallery deletion is enabled. Confirmed
-deletions are propagated to known Finder appearances, including grouped folders;
-Finder may take time to catch up while its extension is unavailable. Separately
-downloaded files are not deleted, and this is not secure erasure of local caches.
+Finder deletion remains unavailable even when gallery deletion is enabled; its
+upload entry point permits additions only. Confirmed deletions are propagated to
+known Finder appearances, including grouped folders; Finder may take time to catch
+up while its extension is unavailable. Separately downloaded files are not deleted,
+and this is not secure erasure of local caches.
 
 ## Project layout
 
@@ -114,8 +149,10 @@ which is unreliable for App Groups on macOS.
    permissions: `album.read`, `asset.read`, `asset.download`, `asset.view` — all four
    (`asset.view` gates the thumbnail endpoint, so grid previews need it) — plus
    `person.read` for the Persons view.
-   Optionally grant **`asset.delete`** for gallery deletion; no additional
-   key-management permission is required.
+   Optionally grant **`asset.upload`** for uploads and **`asset.delete`** for gallery
+   deletion; existing read-only keys remain valid for browsing and downloading.
+   No additional key-management permission is required. Upload requests adapt the
+   required multipart fields to pre-v3 and v3 servers; checksum checks use `asset.upload`.
 
 The minimum supported Immich server version is **v1.135.0**. On servers that expose
 the current key's permissions, Settings shows whether `asset.delete` is missing
@@ -148,11 +185,11 @@ In Xcode:
 
 The app runs as a **menu bar item** (no Dock icon, `LSUIElement`). The menu bar icon
 shows it's running and offers *View Gallery* (the built-in gallery window),
-*Open Settings…* (reopen the settings window) and *Quit Immich Desktop*. The Finder
-integration is tied to the app: **Quit removes the Immich domain** (it disappears
-from Finder), and **launching the app re-adds it** automatically if it was configured
-before. (Stopping the app from Xcode does not run the quit path, so the domain stays
-until the next launch re-syncs it.)
+*Open Settings…* (reopen the settings window) and *Quit Immich Desktop*. Finder
+remains mounted when the app quits so macOS can retain queued transfers and
+continue them independently. Launching the app registers the domain if needed.
+Quitting with gallery uploads offers to keep uploading or stop unfinished work.
+(Stopping the app from Xcode does not run the quit path.)
 
 Icons: `AppIcon` in `ImmichDesktop/Assets.xcassets` is the full-color app icon; the
 menu bar and the Finder sidebar both use the SF Symbol `camera.aperture` (a template
@@ -189,8 +226,15 @@ xcodebuild -project ImmichDesktop.xcodeproj -scheme ImmichDesktop \
 
 ## Known limitations
 
-- Finder is read-only: uploads, renames, moves, and deletions through Finder are
-  not supported.
+- Finder supports additions through **All Photos** only. Renaming, moving, editing,
+  or deleting existing library files through Finder is not supported.
+- Native Finder move source-unlink timing and natural-date reparenting have not
+  been validated against a real server. Implementation is authorized ahead of that
+  runtime validation; do not treat the intended move behavior as a guarantee.
+- Configuration changes and domain removal check active transfers and Finder's
+  pending-upload set. macOS delays and limits that set and omits initial transfers;
+  a system-queued upload not yet reported to the provider may be invisible to the
+  guard. Resolve Finder transfer errors and finish queued work before resetting.
 - Gallery-initiated deletions are reconciled with Finder. Changes made through
   other Immich clients are not continuously synchronized and may require folder
   re-enumeration.

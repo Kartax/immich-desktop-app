@@ -23,3 +23,11 @@ _Avoid_: Album removal, local file deletion
 **Deletion batch**:
 A user-confirmed operation that deletes a fixed Asset selection from the Immich library and continues when the gallery window closes. Stopping leaves completed deletions intact; failed and not-attempted Assets can be retried only after another confirmation, while uncertain outcomes require reconciliation rather than automatic replay.
 _Avoid_: Bulk removal, trash cleanup
+
+**Asset upload**:
+Transfer of a local photo or video file into the existing Immich library without changing its contents or embedded metadata or creating a separate upload-specific library or server folder hierarchy. Uploads accept individual files or multiple files together, not folders, and preserve local originals unless the user explicitly requests a Finder move.
+_Avoid_: Import, sync
+
+**Upload batch**:
+A group of Asset uploads that continues when the gallery window closes, with progress and failures accessible from the menu-bar app. Files succeed or fail independently; temporary connection failures are retried automatically, while rejected files and permission failures require explicit action.
+_Avoid_: Import job, upload session
