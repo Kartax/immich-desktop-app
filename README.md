@@ -38,6 +38,10 @@ The gallery can optionally delete Assets after you enable **Allow deletions** in
 - Select one or more gallery Assets to **Download** their originals to a folder,
   or **Delete** them from the Immich library when deletion is enabled. Result banners
   disappear after five seconds, or immediately using the **×** at the top right.
+- **Copy** gallery Assets with the button immediately left of Download, a tile's
+  right-click menu, or **⌘C**. The enlarged view also has Copy and **⌘C** for its
+  displayed Asset. Copy preserves the selection and prepares original files for
+  pasting into Finder folders or compatible document and mail apps.
 - Drop one or multiple image/video files onto the gallery, or drop/copy/move-paste
   them into Finder's **All Photos** entry point to upload into your existing library.
   See the validation limits below before relying on Finder moves.
@@ -95,6 +99,28 @@ Multipart encoding uses a temporary transport file, removed when the transfer en
 large videos therefore require additional free local disk space during upload.
 Stop or wait for unfinished gallery and Finder transfers before changing the server,
 API key, grouping hierarchy, or removing the Finder domain.
+
+### Copying Assets from the gallery
+
+Copy prepares all requested originals before replacing the clipboard. Progress and
+**Cancel** remain available if you close and reopen the gallery; other gallery
+transfers and deletion are unavailable during preparation. Failure or cancellation
+leaves the previous clipboard unchanged. If you copy something else while originals
+are being prepared, that newer clipboard content wins.
+
+Right-clicking a selected Asset copies the selection; right-clicking an unselected
+Asset copies only that Asset without changing the selection. Multiple Assets use
+gallery display order. Duplicate filenames receive suffixes such as `photo (2).jpg`;
+the original file contents are unchanged.
+
+Photos also offer a decoded image representation where macOS supports it. The
+receiving application decides whether to insert images or attach files, which media
+formats it accepts, and how it handles multiple Assets. Universal paste support is
+not guaranteed, especially for videos and RAW/HEIC files.
+
+Originals use temporary local staging space, retained while backing the current
+clipboard and removed after it is replaced. There is no persistent copy cache or
+guarantee that copied Assets remain pasteable after quitting Immich Desktop.
 
 ### Deleting Assets from the gallery
 

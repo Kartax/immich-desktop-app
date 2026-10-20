@@ -12,6 +12,10 @@ _Avoid_: Item, image
 A transient set of gallery Assets created only through tile selection controls, never by opening an Asset; it survives paging and detail viewing, but clears on a gallery timeline reset or window closure. Successfully downloaded or deleted Assets leave the selection, while failed and not-attempted Assets remain eligible for review and retry.
 _Avoid_: Item selection, selected images
 
+**Asset copy**:
+Placement of one or more Assets’ original files on the clipboard for pasting into another application, without changing the Immich library or Asset selection.
+_Avoid_: Copy link, copy thumbnail
+
 **Download batch**:
 A cancellable, app-owned transfer of the selected assets’ original files into one user-chosen destination folder. Its asset selection is fixed while it runs, and it survives gallery-window closure.
 _Avoid_: Export, asset download

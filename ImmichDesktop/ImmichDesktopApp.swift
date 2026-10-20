@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var settingsWindow: NSWindow?
     private var galleryWindow: NSWindow?
     private let downloadBatch = DownloadBatch()
+    private let copyBatch = CopyBatch()
     private let deletionBatch = DeletionBatch()
     private let uploadBatch = UploadBatch()
     private var uploadStatusMenuItem: NSMenuItem?
@@ -238,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc private func stopUploads() { uploadBatch.cancel() }
     @objc private func retryUploads() {
         guard !terminationInProgress, deletionBatch.phase != .running,
-              downloadBatch.phase != .running else { return }
+              downloadBatch.phase != .running, !copyBatch.isRunning else { return }
         uploadBatch.retryFailures()
     }
     @objc private func dismissUploads() { uploadBatch.dismissResult() }
@@ -348,6 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if galleryWindow == nil {
             let window = NSWindow(contentViewController:
                 NSHostingController(rootView: GalleryView(downloadBatch: downloadBatch,
+                                                         copyBatch: copyBatch,
                                                          deletionBatch: deletionBatch,
                                                          uploadBatch: uploadBatch,
                                                          canStartOperation: { [weak self] in

@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// sections, plus an in-window enlarged view (`AssetDetailView`) on click.
 struct GalleryView: View {
     let downloadBatch: DownloadBatch
+    let copyBatch: CopyBatch
     let deletionBatch: DeletionBatch
     let uploadBatch: UploadBatch
     let canStartOperation: () -> Bool
@@ -25,9 +26,10 @@ struct GalleryView: View {
     @State private var isVisible = false
     @State private var appliedDeletionIDs = Set<String>()
 
-    init(downloadBatch: DownloadBatch, deletionBatch: DeletionBatch, uploadBatch: UploadBatch,
+    init(downloadBatch: DownloadBatch, copyBatch: CopyBatch, deletionBatch: DeletionBatch, uploadBatch: UploadBatch,
          canStartOperation: @escaping () -> Bool) {
         self.downloadBatch = downloadBatch
+        self.copyBatch = copyBatch
         self.deletionBatch = deletionBatch
         self.uploadBatch = uploadBatch
         self.canStartOperation = canStartOperation
@@ -75,11 +77,13 @@ struct GalleryView: View {
                     model: model,
                     loader: loader,
                     index: index,
+                    canCopy: operationsIdle && !actionPending,
                     canDownload: operationsIdle && !actionPending,
                     showDelete: deletionBatch.allowDeletions,
                     canDelete: operationsIdle && deletionBatch.canDelete && !actionPending,
                     deletePermissionMissing: deletionBatch.permission == .missing,
                     onNavigate: { selectedIndex = $0 },
+                    onCopy: { startCopy(assets: [$0]) },
                     onDownload: { chooseDestinationAndStart(assets: [$0]) },
                     onDelete: { confirmDeletion(assets: [$0]) },
                     onClose: { selectedIndex = nil }
@@ -94,8 +98,14 @@ struct GalleryView: View {
                 galleryControls
             }
         }
+        .overlay(alignment: .top) {
+            if selectedIndex != nil && copyBatch.isRunning {
+                selectionBar.padding(.top, 52)
+            }
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 0) {
+                copyResultBanner
                 downloadResultBanner
                 deletionResultBanner
                 uploadResultBanner
@@ -108,9 +118,17 @@ struct GalleryView: View {
         }
         .onDisappear { isVisible = false }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
-            guard canStartOperation(), deletionBatch.phase != .running,
-                  downloadBatch.phase != .running else { return false }
+            guard operationsIdle, !actionPending else { return false }
             return uploadBatch.start(providers: providers)
+        }
+        .background {
+            GalleryCopyCommandHandler {
+                if let index = selectedIndex {
+                    startCopy(assets: [model.assets[index]])
+                } else {
+                    startCopy(assets: model.selectedAssets)
+                }
+            }
         }
         .task {
             uploadRevision = UploadActivity.revision
@@ -170,6 +188,14 @@ struct GalleryView: View {
                                         selectedIndex = model.index(of: asset)
                                     }
                                 )
+                                .contextMenu {
+                                    Button {
+                                        startCopy(assets: model.isSelected(asset.id) ? model.selectedAssets : [asset])
+                                    } label: {
+                                        Label("Copy", systemImage: "doc.on.doc")
+                                    }
+                                    .disabled(!operationsIdle || actionPending)
+                                }
                                 .onAppear { model.loadMoreIfNeeded(after: asset) }
                             }
                         } header: {
@@ -213,7 +239,13 @@ struct GalleryView: View {
 
     private var selectionBar: some View {
         HStack(spacing: 8) {
-            if uploadBatch.isRunning {
+            if copyBatch.isRunning {
+                Text("Preparing copy… \(copyBatch.completedCount) of \(copyBatch.totalCount)")
+                    .monospacedDigit()
+                Button("Cancel") { copyBatch.cancel() }
+                    .buttonStyle(.plain)
+                    .help("Cancel copy preparation")
+            } else if uploadBatch.isRunning {
                 Text(uploadBatch.summary).lineLimit(1)
                 Button("Stop") { uploadBatch.cancel() }.buttonStyle(.plain)
             } else if downloadBatch.phase == .running {
@@ -260,6 +292,15 @@ struct GalleryView: View {
     private var selectionActions: some View {
         HStack(spacing: 8) {
             Button {
+                startCopy(assets: model.selectedAssets)
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .buttonStyle(.plain)
+            .disabled(!operationsIdle || actionPending)
+            .accessibilityLabel("Copy selected Assets")
+            .help("Copy selected Assets")
+            Button {
                 chooseDestinationAndStart(assets: model.selectedAssets)
             } label: {
                 Image(systemName: "arrow.down.circle")
@@ -305,11 +346,11 @@ struct GalleryView: View {
     }
 
     private var operationRunning: Bool {
-        downloadBatch.phase == .running || deletionBatch.phase == .running || uploadBatch.isRunning
+        copyBatch.isRunning || downloadBatch.phase == .running || deletionBatch.phase == .running || uploadBatch.isRunning
     }
 
     private var operationsIdle: Bool {
-        canStartOperation() && downloadBatch.phase == .idle && deletionBatch.phase == .idle && !uploadBatch.isRunning
+        canStartOperation() && !copyBatch.isRunning && downloadBatch.phase == .idle && deletionBatch.phase == .idle && !uploadBatch.isRunning
     }
 
     /// Year → month menu that re-anchors the timeline (no intervening pages are
@@ -341,6 +382,22 @@ struct GalleryView: View {
     }
 
     @ViewBuilder
+    private var copyResultBanner: some View {
+        if let result = copyBatch.result {
+            HStack(alignment: .top, spacing: 12) {
+                Text(result)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                Button("Dismiss") { copyBatch.dismissResult() }
+            }
+            .frame(maxWidth: 620, alignment: .leading)
+            .padding(14)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .padding(12)
+        }
+    }
+
+    @ViewBuilder
     private var uploadResultBanner: some View {
         if uploadBatch.hasResult {
             VStack(alignment: .leading, spacing: 8) {
@@ -353,8 +410,11 @@ struct GalleryView: View {
                     }
                 }
                 HStack {
-                    Button("Retry Failed Files") { uploadBatch.retryFailures() }
-                        .disabled(!uploadBatch.canRetry || !canStartOperation() || operationRunning)
+                    Button("Retry Failed Files") {
+                        guard operationsIdle, !actionPending else { return }
+                        uploadBatch.retryFailures()
+                    }
+                    .disabled(!uploadBatch.canRetry || !operationsIdle || actionPending)
                     Button("Dismiss") { uploadBatch.dismissResult() }
                 }
             }
@@ -587,6 +647,13 @@ struct GalleryView: View {
         }
     }
 
+    private func startCopy(assets: [ImmichAsset]) {
+        guard operationsIdle, !actionPending, !assets.isEmpty,
+              let connectionID = model.connectionID,
+              connectionID == ImmichClient()?.connectionID else { return }
+        copyBatch.start(assets: assets)
+    }
+
     private func chooseDestinationAndStart(assets: [ImmichAsset]) {
         guard operationsIdle, !actionPending, !assets.isEmpty,
               let connectionID = model.connectionID,
@@ -604,7 +671,7 @@ struct GalleryView: View {
             let destination = response == .OK ? panel.url : nil
             Task { @MainActor in
                 actionPending = false
-                guard isVisible, operationsIdle,
+                guard isVisible, operationsIdle, !actionPending,
                       connectionID == ImmichClient()?.connectionID,
                       let destination else { return }
                 _ = downloadBatch.start(assets: assets, destination: destination)
@@ -627,7 +694,8 @@ struct GalleryView: View {
     }
 
     private func confirmDeletion(assets: [ImmichAsset], retrying: Bool = false) {
-        guard canStartOperation(), !assets.isEmpty, !actionPending, !operationRunning,
+        guard retrying || operationsIdle,
+              canStartOperation(), !assets.isEmpty, !actionPending, !operationRunning,
               downloadBatch.phase == .idle,
               deletionBatch.allowDeletions, deletionBatch.permission != .missing,
               retrying ? deletionBatch.phase == .completed : deletionBatch.phase == .idle,
@@ -657,7 +725,7 @@ struct GalleryView: View {
                           deletionBatch.batchConnectionID == connectionID else { return }
                     deletionBatch.consumeResult()
                 }
-                guard operationsIdle else { return }
+                guard operationsIdle, !actionPending else { return }
                 appliedDeletionIDs = []
                 _ = deletionBatch.start(assets: assets)
             }
@@ -771,5 +839,51 @@ private struct GalleryCell: View {
                     image = try? await loader.image(for: asset.id)
                 }
             }
+    }
+}
+
+/// Handles the gallery's asynchronous copy without asking SwiftUI to publish
+/// an immediate item-provider payload that could replace the existing clipboard.
+private struct GalleryCopyCommandHandler: NSViewRepresentable {
+    let onCopy: () -> Void
+
+    func makeNSView(context: Context) -> CommandView {
+        let view = CommandView()
+        view.onCopy = onCopy
+        view.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ view: CommandView, context: Context) {
+        view.onCopy = onCopy
+    }
+
+    static func dismantleNSView(_ view: CommandView, coordinator: ()) {
+        view.removeMonitor()
+    }
+
+    final class CommandView: NSView {
+        var onCopy: (() -> Void)?
+        private var monitor: Any?
+
+        func installMonitor() {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let window = self.window,
+                      event.window === window, window.isKeyWindow,
+                      !(window.firstResponder is NSTextView),
+                      event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                        .subtracting(.capsLock) == .command,
+                      event.charactersIgnoringModifiers?.lowercased() == "c" else { return event }
+                self.onCopy?()
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
     }
 }

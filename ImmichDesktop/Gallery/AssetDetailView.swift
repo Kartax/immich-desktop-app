@@ -1,7 +1,7 @@
 import SwiftUI
 import AVKit
 
-/// Hosts per-Asset Download/Delete actions for the item on screen, using the
+/// Hosts per-Asset Copy/Download/Delete actions for the item on screen, using the
 /// same batch lifecycle and gating as the grid's selection actions.
 /// Full-window enlarged view over the gallery grid. Photos load the larger
 /// `preview` rendition (grid thumb as instant placeholder); videos stream via
@@ -10,11 +10,13 @@ struct AssetDetailView: View {
     let model: GalleryViewModel
     let loader: ThumbnailLoader
     let index: Int
+    let canCopy: Bool
     let canDownload: Bool
     let showDelete: Bool
     let canDelete: Bool
     let deletePermissionMissing: Bool
     let onNavigate: (Int) -> Void
+    let onCopy: (ImmichAsset) -> Void
     let onDownload: (ImmichAsset) -> Void
     let onDelete: (ImmichAsset) -> Void
     let onClose: () -> Void
@@ -31,6 +33,14 @@ struct AssetDetailView: View {
         ZStack {
             Color(nsColor: .windowBackgroundColor)
             content
+        }
+        .contextMenu {
+            Button {
+                onCopy(asset)
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .disabled(!canCopy)
         }
         .overlay(alignment: .topLeading) {
             // Opaque dark capsule + white text so the controls stay readable on any
@@ -88,6 +98,16 @@ struct AssetDetailView: View {
     }
     private var detailActions: some View {
         HStack(spacing: 8) {
+            Button {
+                onCopy(asset)
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .buttonStyle(.plain)
+            .disabled(!canCopy)
+            .accessibilityLabel("Copy \(asset.originalFileName)")
+            .help("Copy this Asset")
+
             Button {
                 onDownload(asset)
             } label: {
